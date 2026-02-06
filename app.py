@@ -9,7 +9,6 @@ import os
 from PIL import Image, ImageTk
 import json
 import glob
-import glob
 import re
 from collections import Counter
 from extract_features import register_person, delete_person
@@ -118,8 +117,6 @@ class ModernDigestApp(ctk.CTk):
         except Exception as e:
             print(f"Failed to load icon: {e}")
             
-        self.load_config_to_ui()
-
         # UI構築
         self.create_layout()
         self.refresh_profiles()
