@@ -42,6 +42,11 @@ jobs:
         run: |
           pyinstaller Omokage.spec --noconfirm
 
+      - name: Ad-hoc Sign (macOS)
+        if: matrix.os == 'macos-latest'
+        run: |
+          codesign --force --deep --sign - dist/Omokage.app
+
       - name: Prepare Artifacts (macOS)
         if: matrix.os == 'macos-latest'
         run: |
