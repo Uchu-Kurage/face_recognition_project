@@ -2,7 +2,8 @@ dlib
 face-recognition-models
 face_recognition
 opencv-python
-moviepy
+moviepy==1.0.3
+decorator
 customtkinter
 packaging
 pillow

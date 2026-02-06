@@ -11,7 +11,15 @@ models_path = os.path.dirname(face_recognition_models.__file__)
 
 datas = [('assets', 'assets'), (models_path, 'face_recognition_models'), ('LICENSE_NOTICE.md', '.')]
 binaries = []
-hiddenimports = []
+hiddenimports = [
+    'moviepy.editor',
+    'moviepy.video.fx.all',
+    'moviepy.audio.fx.all',
+    'moviepy.video.VideoClip',
+    'moviepy.video.compositing.CompositeVideoClip',
+    'moviepy.audio.AudioClip',
+    'decorator'
+]
 
 # Collect all (datas, binaries, hiddenimports) for tricky packages
 for pkg in ['imageio', 'moviepy', 'customtkinter']:
