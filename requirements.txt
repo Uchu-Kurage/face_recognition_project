@@ -18,3 +18,7 @@ huggingface-hub
 safetensors
 psutil
 tqdm
+deepface
+tf-keras
+pandas
+gdown

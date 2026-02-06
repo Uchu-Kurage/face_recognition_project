@@ -18,11 +18,12 @@ hiddenimports = [
     'moviepy.video.VideoClip',
     'moviepy.video.compositing.CompositeVideoClip',
     'moviepy.audio.AudioClip',
-    'decorator'
+    'decorator',
+    'deepface'
 ]
 
 # Collect all (datas, binaries, hiddenimports) for tricky packages
-for pkg in ['imageio', 'moviepy', 'customtkinter']:
+for pkg in ['imageio', 'moviepy', 'customtkinter', 'deepface']:
     tmp_ret = collect_all(pkg)
     datas += tmp_ret[0]
     binaries += tmp_ret[1]
