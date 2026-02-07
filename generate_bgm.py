@@ -43,28 +43,50 @@ def generate_bgm(vibe="穏やか", duration_seconds=30, output_dir="bgm", token=
     """
     from diffusers import StableAudioPipeline
     
-    # Vibeを英語プロンプトにマッピング
-    vibe_prompts = {
-        "穏やか": "beautifully melodic acoustic guitar and piano, lush ambient textures, warm and peaceful, emotionally evolving melody, rich harmonies, high quality, studio recording",
-        "エネルギッシュ": "uplifting and catchy energetic pop music, bright synths and driving drums, melodic guitar hooks, high-energy arrangement, professional production, vibrant and happy",
-        "感動的": "cinematic orchestral masterpiece, soaring expressive violin melody, rich emotional piano, dramatic shifts, powerful arrangement, evocative and soaring, high quality",
-        "かわいい": "playful and whimsical upbeat melody, plucky strings and mallets, bright and cheerful, varied instrumentation, catchy hooks, bouncy and lighthearted, high quality"
-    }
-
-    # Vibeに応じたファイル名マッピング
-    vibe_to_filename = {
-        "穏やか": "calm.wav",
-        "エネルギッシュ": "energetic.wav",
-        "感動的": "emotional.wav",
-        "かわいい": "cute.wav"
-    }
-
-    prompt = vibe_prompts.get(vibe, vibe_prompts["穏やか"])
+    import random
     
-    # 出力ファイル名の決定
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    base_name = vibe_to_filename.get(vibe, "bgm.wav").replace(".wav", "")
-    filename = f"{base_name}_{timestamp}.wav"
+    # Vibeを英語プロンプトのリストにマッピング (バリエーション強化)
+    vibe_prompts_map = {
+        "穏やか": [
+            "beautifully melodic acoustic guitar and piano, warm and peaceful, emotionally evolving, studio recording",
+            "ambient ethereal soundscape, soft pads and distant bells, serene and calm, meditative, high quality",
+            "gentle solo piano, emotional and nostalgic, soft touch, peaceful atmosphere, professional production",
+            "lo-fi acoustic chill, mellow vibes, relaxing beats with warm guitar, cozy and serene"
+        ],
+        "エネルギッシュ": [
+            "uplifting energetic pop, bright synths and driving drums, catchy melodic hooks, high-energy, professional production",
+            "fast-paced synthwave, neon vibes, rhythmic and driving electronic beats, energetic and bold",
+            "funky upbeat rhythm, groovy bassline and bright horns, danceable and happy, high quality",
+            "inspiring corporate pop, motivational and bright, rhythmic guitar and percussion, positive energy"
+        ],
+        "感動的": [
+            "cinematic orchestral masterpiece, soaring expressive violin, rich emotional piano, dramatic and powerful",
+            "epic cinematic piano and strings, building tension and emotional release, evocative and grand",
+            "heartfelt solo cello and piano, deep emotional resonance, slowly evolving beautiful melody, high quality",
+            "atmospheric cinematic soundscape, emotional swells, ethereal vocals and lush strings, evocative"
+        ],
+        "かわいい": [
+            "playful whimsical melody, plucky strings and mallets, bright and cheerful, bouncy and lighthearted",
+            "cute 8-bit chiptune, happy and adventurous, retro game music, catchy and playful electronics",
+            "kawaii future bass, bright and bubbly synths, sweet melody, energetic and cute rhythm",
+            "gentle toy piano and woodwinds, nursery rhyme style, innocent and sweet, playful atmosphere"
+        ]
+    }
+
+    choices = vibe_prompts_map.get(vibe, vibe_prompts_map["穏やか"])
+    prompt = random.choice(choices)
+    
+    # プロンプトの一部を抜粋してスタイル名として使用（ファイル名用）
+    style_keywords = ["piano", "guitar", "synth", "violin", "lofi", "8-bit", "orchestra", "ambient"]
+    detected_style = "music"
+    for kw in style_keywords:
+        if kw in prompt.lower():
+            detected_style = kw
+            break
+
+    # Vibeに応じたベースファイル名
+    base_name = vibe
+    filename = f"{base_name}_{detected_style}_{timestamp}.wav"
     
     # Ensure absolute path if it looks relative
     if not os.path.isabs(output_dir):
