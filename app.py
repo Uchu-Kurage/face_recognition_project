@@ -49,6 +49,9 @@ class RedirectText(object):
 
     def isatty(self):
         return False
+        
+    def close(self):
+        pass
 
 # アプリ設定
 ctk.set_appearance_mode("Dark")
@@ -817,7 +820,7 @@ class ModernDigestApp(ctk.CTk):
                 vibes_str = ", ".join([v[0] for v in vibes]) if vibes else "-"
                 
                 # Check profile image
-                icon_path = os.path.join(get_app_dir(), "assets/profiles", f"{p_name}.jpg")
+                icon_path = os.path.join(get_app_dir(), "profiles", f"{p_name}.jpg")
                 icon_img = None
                 if os.path.exists(icon_path):
                     try:
@@ -854,7 +857,7 @@ class ModernDigestApp(ctk.CTk):
         self.log_queue.put((msg_val, kwargs))
 
     def update_target_menu(self):
-        profile_dir = os.path.join(get_app_dir(), "assets/profiles")
+        profile_dir = os.path.join(get_app_dir(), "profiles")
         icons = glob.glob(os.path.join(profile_dir, "*.jpg"))
         names = [os.path.splitext(os.path.basename(i))[0] for i in icons]
         if not names:
