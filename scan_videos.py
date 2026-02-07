@@ -85,6 +85,9 @@ def scan_video(video_path, target_data, check_interval_sec=1.0, resize_scale=0.2
     fps = cap.get(cv2.CAP_PROP_FPS)
     total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
     video_duration = total_frames / fps if fps > 0 else 0
+    frame_width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    frame_height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    total_pixels = frame_width * frame_height if frame_width > 0 else 1
     
     # 動画名と長さを表示
     print(f"  スキャン中: {os.path.basename(video_path)} ({video_duration:.1f}秒, {fps:.1f}fps)")
@@ -99,19 +102,24 @@ def scan_video(video_path, target_data, check_interval_sec=1.0, resize_scale=0.2
     end_limit = total_frames - int(fps * 1.5)
     
     current_frame_index = start_margin
+    prev_frame_gray = None # 動き解析用
     
     while True:
-        # 指定フレームまでスキップ（seekだと遅い場合もあるが、大幅なスキップならsetが良い。ここではreadループで飛ばすのは無駄なのでsetを使う）
-        # ただし、set(CAP_PROP_POS_FRAMES) はコーデックによっては遅い・不正確な場合がある。
-        # 1秒間隔程度なら grab() ループの方が安定する場合もあるが、ここではシンプルにsetを試みる。
         cap.set(cv2.CAP_PROP_POS_FRAMES, current_frame_index)
-        
         ret, frame = cap.read()
         if not ret:
             break
 
+        # 動き（モーション）スコアの計算
+        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        motion_score = 0.0
+        if prev_frame_gray is not None:
+            # 前のチェックフレームとの差分（簡易的）
+            diff = cv2.absdiff(gray, prev_frame_gray)
+            motion_score = np.mean(diff) / 25.5 # 0-10にスケーリング
+        prev_frame_gray = gray
+
         # BGR(OpenCV) -> RGB(face_recognition)
-        # 高速化のためにリサイズ
         small_frame = cv2.resize(frame, (0, 0), fx=resize_scale, fy=resize_scale)
         rgb_small_frame = cv2.cvtColor(small_frame, cv2.COLOR_BGR2RGB)
 
@@ -119,55 +127,52 @@ def scan_video(video_path, target_data, check_interval_sec=1.0, resize_scale=0.2
         face_locations = face_recognition.face_locations(rgb_small_frame)
         
         if face_locations:
-            # 特徴量抽出
             face_encodings = face_recognition.face_encodings(rgb_small_frame, face_locations)
             
             for i, enc in enumerate(face_encodings):
-                # 登録されている全人物と比較
                 names = list(target_data.keys())
                 known_encodings = [target_data[n] for n in names]
-                
                 matches = face_recognition.compare_faces(known_encodings, enc, tolerance=0.5)
                 
                 if True in matches:
                     first_match_index = matches.index(True)
                     name = names[first_match_index]
-                    
                     timestamp = current_frame_index / fps
                     
-                    # 感情分析（笑顔検出）
+                    # 顔の大きさ（クローズアップ度）
                     top, right, bottom, left = face_locations[i]
-                    # 元のフレームから顔を切り出す（解像度を確保するため rgb_small_frame ではなく frame を使用）
-                    # 座標を元に戻す (* 1/resize_scale)
                     inv_scale = 1.0 / resize_scale
-                    top_orig = int(top * inv_scale)
-                    right_orig = int(right * inv_scale)
-                    bottom_orig = int(bottom * inv_scale)
-                    left_orig = int(left * inv_scale)
+                    face_w = (right - left) * inv_scale
+                    face_h = (bottom - top) * inv_scale
+                    face_ratio = (face_w * face_h) / total_pixels * 100.0 # ％表記
                     
                     happy_score = 0
+                    drama_score = 0
                     description = ""
                     vibe = ""
                     try:
-                        face_img = frame[top_orig:bottom_orig, left_orig:right_orig]
+                        face_img = frame[int(top*inv_scale):int(bottom*inv_scale), int(left*inv_scale):int(right*inv_scale)]
                         analysis = DeepFace.analyze(face_img, actions=['emotion'], enforce_detection=False, silent=True)
-                        if isinstance(analysis, list):
-                            analysis = analysis[0]
-                        emotions = analysis['emotion']
-                        happy_score = float(emotions['happy']) / 100.0
-                        description, vibe = infer_description_vibe(emotions)
+                        if isinstance(analysis, list): analysis = analysis[0]
+                        emo = analysis['emotion']
+                        
+                        happy_score = float(emo['happy']) / 100.0
+                        # ドラマスコア: 驚き、悲しみ、怒り、恐怖を合算
+                        drama_score = (float(emo['surprise']) + float(emo['sad']) + float(emo['angry']) + float(emo['fear'])) / 100.0
+                        description, vibe = infer_description_vibe(emo)
                     except:
                         description, vibe = "人物が映っているシーン", "穏やか"
 
                     v_score = calculate_visual_score(frame)
-                    
-                    # 撮影日時 (ファイルの更新日時を基準)
                     mtime = os.path.getmtime(video_path)
                     date_str = datetime.datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M:%S')
 
                     results_per_person[name].append({
                         "t": round(float(timestamp), 2),
                         "happy": round(happy_score, 3),
+                        "drama": round(drama_score, 3),
+                        "motion": round(float(motion_score), 2),
+                        "face_ratio": round(float(face_ratio), 2),
                         "description": description,
                         "vibe": vibe,
                         "visual_score": v_score,

@@ -152,21 +152,21 @@ def create_story(person_name, period="All Time", focus="Balance", bgm_enabled=Fa
     def get_key_func(part):
         if focus == "Smile":
             # 笑顔スコア優先
-            return lambda x: x["happy"]
+            return lambda x: x.get("happy", 0)
             
         elif focus == "Active":
-            # エネルギッシュ優先、なければVisual
-            return lambda x: (x["vibe"] == "エネルギッシュ", x["visual_score"])
+            # 動き（モーション）優先、なければVisual
+            return lambda x: (x.get("motion", 0), x.get("visual_score", 0))
             
         elif focus == "Emotional":
-            # 感動的優先、なければ穏やか + Visual
-            return lambda x: (x["vibe"] == "感動的", x["visual_score"])
+            # ドラマ（豊かな感情）+ クローズアップ度 優先
+            return lambda x: (x.get("drama", 0), x.get("face_ratio", 0))
             
         else: # Balance (Default)
-            if part == "起": return lambda x: (x["vibe"] == "穏やか", x["visual_score"])
-            elif part == "承": return lambda x: x["visual_score"]
-            elif part == "転": return lambda x: x["happy"]
-            elif part == "結": return lambda x: (x["vibe"] == "穏やか", x["visual_score"])
+            if part == "起": return lambda x: (x.get("vibe", "") == "穏やか", x.get("visual_score", 0))
+            elif part == "承": return lambda x: x.get("visual_score", 0)
+            elif part == "転": return lambda x: x.get("happy", 0)
+            elif part == "結": return lambda x: (x.get("vibe", "") == "穏やか", x.get("visual_score", 0))
 
     # [起] Intro: 2 clips
     ki = pick_unique(ki_segment, 2, get_key_func("起"))
