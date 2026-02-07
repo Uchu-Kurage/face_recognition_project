@@ -114,6 +114,15 @@ def create_story(person_name, period="All Time", focus="Balance", bgm_enabled=Fa
     ten_segment = all_clips[idx_sho:idx_ten]
     ketsu_segment = all_clips[idx_ten:]
 
+    # Focus の正規化 (UIは日本語、内部は英語で判定していたため)
+    focus_map = {
+        "バランス": "Balance",
+        "笑顔": "Smile",
+        "動き": "Active",
+        "感動": "Emotional"
+    }
+    focus = focus_map.get(focus, focus) # 日本語なら英語に、そうでなければそのまま
+
     # Focusに応じた選択ロジック関数の切り替え
     def get_key_func(part):
         if focus == "Smile":
@@ -192,6 +201,7 @@ def create_story(person_name, period="All Time", focus="Balance", bgm_enabled=Fa
     if focus == "Smile": dominant_vibe = "かわいい"
     elif focus == "Active": dominant_vibe = "エネルギッシュ"
     elif focus == "Emotional": dominant_vibe = "感動的"
+    elif focus == "Balance": dominant_vibe = "穏やか"
 
     bgm_map = {
         "穏やか": "Lo-fi / Acoustic (Soft and warm)",
