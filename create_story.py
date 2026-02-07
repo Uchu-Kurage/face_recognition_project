@@ -58,12 +58,24 @@ def create_story(person_name, period="All Time", focus="Balance", bgm_enabled=Fa
     import random
 
     def pick_unique(candidates, count, key_func, reverse=True):
-        """重複を避けつつ、上位候補からランダムに選択する。"""
-        # スコア順にソート
-        sorted_cands = sorted(candidates, key=key_func, reverse=reverse)
+        """重複を避けつつ、バリエーション豊かな候補からランダム性を考慮して選択する。"""
         
-        # 候補プールを広げる（必要な数の5倍程度まで）
-        pool_size = min(len(sorted_cands), count * 5)
+        # スコアに揺らぎ（ノイズ）を加える
+        def noisy_key(x):
+            val = key_func(x)
+            # 数値の場合は ±20% の揺らぎを加える
+            if isinstance(val, (int, float)):
+                return val * random.uniform(0.8, 1.2)
+            # タプルの場合は各要素に ±10% の揺らぎ（数値のみ）
+            if isinstance(val, tuple):
+                return tuple((v * random.uniform(0.9, 1.1) if isinstance(v, (int, float)) else v) for v in val)
+            return val
+
+        # 揺らぎを加えたスコアでソート
+        sorted_cands = sorted(candidates, key=noisy_key, reverse=reverse)
+        
+        # 候補プールを大幅に広げる（必要数の15倍、または全候補の半分）
+        pool_size = max(min(len(sorted_cands), count * 15), len(sorted_cands) // 2)
         pool = sorted_cands[:pool_size]
         
         # 絶対に同じシーンは選ばない (STRICT)
@@ -71,8 +83,21 @@ def create_story(person_name, period="All Time", focus="Balance", bgm_enabled=Fa
         
         picked = []
         
-        # Phase 1: 未使用の日付 & 未使用のビデオ から選ぶ (バリエーション優先)
-        p1 = [c for c in pool if c["video_path"] not in used_videos and c["timestamp"].split(" ")[0] not in used_dates]
+        # 同一動画内での時間的分散（近くのシーンを連続して選ばない）
+        def is_temporally_dispersed(c):
+            # 同じ動画から既に選んでいる場合、それらと一定時間(15秒)以上離れているか
+            picked_ts = [p["t"] for p in picked if p["video_path"] == c["video_path"]]
+            # 他のフェーズで選ばれたシーンとも比較
+            global_picked_ts = [s[1] for s in used_scenes if s[0] == c["video_path"]]
+            all_nearby_ts = picked_ts + global_picked_ts
+            
+            for pt in all_nearby_ts:
+                if abs(pt - c["t"]) < 15.0:
+                    return False
+            return True
+
+        # Phase 1: 未使用の日付 & 未使用のビデオ & 時間的分散
+        p1 = [c for c in pool if c["video_path"] not in used_videos and c["timestamp"].split(" ")[0] not in used_dates and is_temporally_dispersed(c)]
         random.shuffle(p1)
         for c in p1:
             if len(picked) >= count: break
@@ -81,9 +106,9 @@ def create_story(person_name, period="All Time", focus="Balance", bgm_enabled=Fa
             used_videos.add(c["video_path"])
             used_dates.add(c["timestamp"].split(" ")[0])
         
-        # Phase 2: 未使用のビデオ から選ぶ (日付重複は許容)
+        # Phase 2: 未使用のビデオ & 時間的分散
         if len(picked) < count:
-            p2 = [c for c in pool if c["video_path"] not in used_videos and (c["video_path"], c["t"]) not in used_scenes]
+            p2 = [c for c in pool if c["video_path"] not in used_videos and (c["video_path"], c["t"]) not in used_scenes and is_temporally_dispersed(c)]
             random.shuffle(p2)
             for c in p2:
                 if len(picked) >= count: break
@@ -92,11 +117,11 @@ def create_story(person_name, period="All Time", focus="Balance", bgm_enabled=Fa
                 used_videos.add(c["video_path"])
                 used_dates.add(c["timestamp"].split(" ")[0])
 
-        # Phase 3: ビデオ/日付重複を許容して選ぶ (ただしシーン重複は絶対にNG)
+        # Phase 3: 条件を緩めて選ぶ (ただしシーン重複は絶対にNG)
         if len(picked) < count:
-            p3 = [c for c in pool if (c["video_path"], c["t"]) not in used_scenes]
-            random.shuffle(p3)
-            for c in p3:
+            remaining = [c for c in pool if (c["video_path"], c["t"]) not in used_scenes]
+            random.shuffle(remaining)
+            for c in remaining:
                 if len(picked) >= count: break
                 picked.append(c)
                 used_scenes.add((c["video_path"], c["t"]))
