@@ -9,12 +9,9 @@ import cv2
 import numpy as np
 import face_recognition
 from moviepy.editor import VideoFileClip, concatenate_videoclips, ColorClip, CompositeVideoClip, AudioFileClip, CompositeAudioClip, ImageClip
-from utils import resource_path, load_config
+from utils import resource_path, load_config, get_user_data_dir
 
-def get_app_dir():
-    if getattr(sys, 'frozen', False):
-        return os.path.dirname(sys.executable)
-    return os.path.dirname(os.path.abspath(__file__))
+
 
 def apply_blur(frame, target_encodings, blur_enabled):
     if not blur_enabled:
@@ -333,13 +330,46 @@ def render_documentary(playlist_path='story_playlist.json', config_path='config.
                 "かわいい": "cute"
             }
             
+            import unicodedata
+            
             # Check for manual BGM
             manual_bgm = playlist_data.get("manual_bgm_path", "")
             print(f"DEBUG: Manual BGM Path from playlist: '{manual_bgm}'")
             
             candidates = []
-            if manual_bgm and os.path.exists(manual_bgm):
-                candidates = [manual_bgm]
+            if manual_bgm:
+                # 1. Try exact match
+                if os.path.exists(manual_bgm):
+                    candidates = [manual_bgm]
+                else:
+                    # 2. Try Unicode normalization (NFC/NFD)
+                    normalized_nfc = unicodedata.normalize('NFC', manual_bgm)
+                    normalized_nfd = unicodedata.normalize('NFD', manual_bgm)
+                    
+                    if os.path.exists(normalized_nfc):
+                        candidates = [normalized_nfc]
+                        print(f"DEBUG: Found BGM via NFC normalization: {normalized_nfc}")
+                    elif os.path.exists(normalized_nfd):
+                        candidates = [normalized_nfd]
+                        print(f"DEBUG: Found BGM via NFD normalization: {normalized_nfd}")
+                    else:
+                        # 3. Try finding by filename in the bgm directory (loose match)
+                        bgm_dir = os.path.dirname(manual_bgm)
+                        bgm_name = os.path.basename(manual_bgm)
+                        
+                        if os.path.exists(bgm_dir):
+                            print(f"DEBUG: Searching in {bgm_dir} for {bgm_name}...")
+                            for f in os.listdir(bgm_dir):
+                                # Normalize both for comparison
+                                if unicodedata.normalize('NFC', f) == unicodedata.normalize('NFC', bgm_name):
+                                    found_path = os.path.join(bgm_dir, f)
+                                    candidates = [found_path]
+                                    print(f"DEBUG: Found BGM via directory search: {found_path}")
+                                    break
+            
+            if candidates:
+                # Use the first valid candidate
+                manual_bgm = candidates[0]
                 print(f"\n>>> Using Manually Selected BGM (Found): {manual_bgm}")
             else:
                 if manual_bgm:

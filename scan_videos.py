@@ -81,6 +81,38 @@ def infer_description_vibe(emotion_data, motion=0.0, face_ratio=0.0, visual_scor
 
     return desc, vibe
 
+def get_app_dir():
+    if getattr(sys, 'frozen', False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+from utils import get_user_data_dir
+
+def load_processed_files(scan_results_path):
+    if os.path.exists(scan_results_path):
+        try:
+            with open(scan_results_path, 'r') as f:
+                data = json.load(f)
+                return set(data.keys())
+        except:
+            pass
+    return set()
+
+def main(video_folder):
+    if not os.path.exists(video_folder):
+        print(f"Error: Video folder not found: {video_folder}")
+        return
+
+    # --- PATH SETUP ---
+    user_data_dir = get_user_data_dir()
+    target_faces_path = os.path.join(user_data_dir, "target_faces.pkl")
+    scan_results_path = os.path.join(user_data_dir, "scan_results.json")
+    
+    # Check Target Faces
+    if not os.path.exists(target_faces_path):
+        print("Error: Target faces not registered.")
+        return
+
 def load_target_encodings(pkl_path='target_faces.pkl'):
     """保存された顔特徴辞書データをロードする"""
     if not os.path.exists(pkl_path):
@@ -237,9 +269,10 @@ def scan_video(video_path, target_data, check_interval_sec=0.5, resize_scale=0.5
                             except:
                                 d["happy"], d["drama"], d["description"], d["vibe"], d["visual_score"] = 0, 0, "人物が映っているシーン", "ナチュラル", 5.0
                             
-                            # サムネイルも確定時のみ生成
-                            from utils import generate_face_thumbnail, get_app_dir
-                            generate_face_thumbnail(video_path, d["t"], d["face_loc"], get_app_dir())
+                            # Generate thumbnail for UI (using user profile dir)
+                            from utils import generate_face_thumbnail, get_user_data_dir
+                            profile_dir = os.path.join(get_user_data_dir(), "profiles")
+                            generate_face_thumbnail(video_path, d["t"], d["face_loc"], profile_dir)
                             return d
 
                         if not added:
@@ -268,8 +301,8 @@ def scan_video(video_path, target_data, check_interval_sec=0.5, resize_scale=0.5
 
 def run_scan(video_folder, target_pkl='target_faces.pkl', output_json=None, force=False, stop_event=None):
     if output_json is None:
-        from utils import get_app_dir
-        output_json = os.path.join(get_app_dir(), 'scan_results.json')
+        from utils import get_user_data_dir
+        output_json = os.path.join(get_user_data_dir(), 'scan_results.json')
         
     # 特徴量ロード
     target_data = load_target_encodings(target_pkl)

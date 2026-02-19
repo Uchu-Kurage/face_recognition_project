@@ -29,7 +29,7 @@ import generate_bgm
 import webbrowser
 import pygame
 import cv2
-from utils import resource_path, get_app_dir
+from utils import resource_path, get_app_dir, get_user_data_dir
 
 class RedirectText(object):
     def __init__(self, callback):
@@ -64,6 +64,8 @@ class RedirectText(object):
     def close(self):
         pass
 
+
+
 # アプリ設定
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
@@ -85,18 +87,39 @@ class ModernDigestApp(ctk.CTk):
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue") # Base theme
         
-        # Set top-level background to deep indigo
+        # Set top-level background
         self.configure(fg_color=self.COLOR_DEEP_BG)
 
-        # 変数 (実行ファイルと同階層に保存)
-        app_dir = get_app_dir()
-        self.CONFIG_FILE = os.path.join(app_dir, "config.json")
-        self.SCAN_RESULTS = os.path.join(app_dir, "scan_results.json")
-        self.TARGET_PKL = os.path.join(app_dir, "target_faces.pkl")
-        self.STORY_PLAYLIST = os.path.join(app_dir, "story_playlist.json")
-        self.OUTPUT_DIR = os.path.join(app_dir, "output")
+        # --- PATH SETUP for READ-ONLY vs WRITEABLE ---
+        self.app_dir = get_app_dir()           # Read-only (Resources, Code)
+        self.user_data_dir = get_user_data_dir() # Writeable (Config, Profiles, Output)
         
+        # --- CONSTANTS & PATHS (Updated for Separation) ---
+        self.CONFIG_FILE = os.path.join(self.user_data_dir, "config.json")
+        self.SCAN_RESULTS_FILE = os.path.join(self.user_data_dir, "scan_results.json")
+        self.TARGET_FACES_FILE = os.path.join(self.user_data_dir, "target_faces.pkl")
+        self.PLAYLIST_FILE = os.path.join(self.user_data_dir, "story_playlist.json")
+        
+        self.PROFILES_DIR = os.path.join(self.user_data_dir, "profiles")
+        if not os.path.exists(self.PROFILES_DIR):
+            os.makedirs(self.PROFILES_DIR, exist_ok=True)
+
+        # Output Textures / Icons (Keep in Resource Path)
+        self.ICON_ASSETS_DIR = resource_path("assets") 
+        
+        # Output Videos (User configurable, defaulting to Documents/Omokage/Output)
+        self.DEFAULT_OUTPUT_DIR = os.path.join(os.path.expanduser("~/Documents"), "Omokage", "Output")
+        if not os.path.exists(self.DEFAULT_OUTPUT_DIR):
+             os.makedirs(self.DEFAULT_OUTPUT_DIR, exist_ok=True)
+        
+        self.OUTPUT_DIR = self.DEFAULT_OUTPUT_DIR # Will be updated by config
+        
+        # Load Config First
         self.config = self.load_config()
+        
+        # Override output dir if in config
+        if "video_folder" in self.config and self.config["video_folder"]:
+             self.OUTPUT_DIR = self.config["video_folder"]
         
         self.target_image_path = ctk.StringVar(value=self.config.get("target_path", ""))
         self.video_folder_path = ctk.StringVar(value=self.config.get("video_folder", ""))
@@ -671,6 +694,22 @@ class ModernDigestApp(ctk.CTk):
         elif name == "about":
             self.about_frame.grid(row=0, column=0, sticky="nsew")
 
+    def load_scan_results(self):
+        if os.path.exists(self.SCAN_RESULTS_FILE):
+            try:
+                with open(self.SCAN_RESULTS_FILE, 'r', encoding='utf-8') as f:
+                    return json.load(f)
+            except:
+                pass
+        return {}
+        
+    def save_scan_results(self, data):
+        try:
+            with open(self.SCAN_RESULTS_FILE, 'w', encoding='utf-8') as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"Error saving scan results: {e}")
+
     def load_config(self):
         if os.path.exists(self.CONFIG_FILE):
             try:
@@ -712,7 +751,7 @@ class ModernDigestApp(ctk.CTk):
         
         # Step 3: Register
         self.log(f"[SYSTEM] Registering {name}...")
-        success, reason = register_person(path, name, pkl_path=self.TARGET_PKL)
+        success, reason = register_person(path, name, pkl_path=self.TARGET_FACES_FILE)
         
         if success:
             self.log(f"[SUCCESS] Registered {name}")
@@ -731,18 +770,23 @@ class ModernDigestApp(ctk.CTk):
             messagebox.showerror("登録失敗", msg)
 
     def delete_click(self, name):
-        if messagebox.askyesno("削除", f"プロファイル '{name}' を削除してもよろしいですか？"):
-            if delete_person(name, pkl_path=self.TARGET_PKL):
-                self.log(f"[SYSTEM] Deleted profile: {name}")
-                self.refresh_profiles()
-            else:
-                self.log(f"[ERROR] Failed to delete: {name}")
+        if messagebox.askyesno("削除確認", f"プロファイル '{name}' を削除しますか？\n(スキャン結果からも削除されます)"):
+            msg = delete_person(name, self.TARGET_FACES_FILE)
+            self.log(f"削除: {msg}")
+            
+            # Remove from scan results too
+            results = self.load_scan_results()
+            if results and "people" in results and name in results["people"]:
+                del results["people"][name]
+                self.save_scan_results(results)
+            
+            self.refresh_profiles()
 
     def refresh_profiles(self):
         for child in self.profile_scroll.winfo_children():
             child.destroy()
             
-        profile_dir = os.path.join(get_app_dir(), "profiles")
+        profile_dir = self.PROFILES_DIR
         icons = glob.glob(os.path.join(profile_dir, "*.jpg"))
         for icon_path in sorted(icons):
             p_name = os.path.splitext(os.path.basename(icon_path))[0]
@@ -792,7 +836,7 @@ class ModernDigestApp(ctk.CTk):
                 sys.stderr = RedirectText(lambda s: self.log(s, end=""))
                 
                 try:
-                    scan_videos.run_scan(folder, target_pkl=self.TARGET_PKL, output_json=self.SCAN_RESULTS, force=self.force_rescan.get(), stop_event=self.scan_stop_event)
+                    scan_videos.run_scan(folder, target_pkl=self.TARGET_FACES_FILE, output_json=self.SCAN_RESULTS_FILE, force=self.force_rescan.get(), stop_event=self.scan_stop_event)
                 finally:
                     sys.stdout = current_stdout
                     sys.stderr = current_stderr
@@ -803,13 +847,16 @@ class ModernDigestApp(ctk.CTk):
                 else:
                     self.log("\n>>> SCAN COMPLETE!")
                     self.log("__NOTIFY__", title="完了", message="動画スキャンが完了しました。")
-                    
+            
                 self.after(0, self.refresh_scanned_files)
                 self.after(0, self.update_period_menu)
+            
             except Exception as e:
                 self.log(f"ERROR: {e}")
                 self.log("__NOTIFY__", title="エラー", message=str(e), type="error")
             finally:
+                self.is_running = False
+                self.scan_stop_event.clear()
                 self.cached_scan_data = None # Invalidate cache
                 self.after(0, self.reset_scan_ui)
         # update dynamic menu
@@ -830,12 +877,12 @@ class ModernDigestApp(ctk.CTk):
         loading_lbl.pack(pady=20)
         
         def bg_load():
-            if not os.path.exists(self.SCAN_RESULTS):
+            if not os.path.exists(self.SCAN_RESULTS_FILE):
                 self.after(0, lambda: self._finalize_refresh_ui(None, [], loading_lbl))
                 return
 
             try:
-                with open(self.SCAN_RESULTS, 'r', encoding='utf-8') as f:
+                with open(self.SCAN_RESULTS_FILE, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                 
                 scanned_paths = sorted(data.get("metadata", {}).keys(), reverse=True)
@@ -1001,7 +1048,7 @@ class ModernDigestApp(ctk.CTk):
         self.log_queue.put((msg_val, kwargs))
 
     def update_target_menu(self):
-        profile_dir = os.path.join(get_app_dir(), "profiles")
+        profile_dir = self.PROFILES_DIR
         icons = glob.glob(os.path.join(profile_dir, "*.jpg"))
         names = sorted([os.path.splitext(os.path.basename(i))[0] for i in icons])
         if not names:
@@ -1104,13 +1151,8 @@ class ModernDigestApp(ctk.CTk):
             self.log("__NOTIFY__", title="警告", message="人物を選択してください。", type="warning")
             return
         
-        # Check HF Token if BGM is enabled
-        if self.bgm_enabled.get():
-            if not self.hf_token.get().strip():
-                self.log("__NOTIFY__", title="警告", 
-                         message="BGM生成にはHugging Faceトークンが必要です。\n設定ページでトークンを入力してください。", type="warning")
-                self.select_frame_by_name("about")
-                return
+        # HF Token check removed as AI BGM generation is deprecated.
+        # if self.bgm_enabled.get(): ...
             
         if self.is_running: return
 
@@ -1141,14 +1183,14 @@ class ModernDigestApp(ctk.CTk):
                         period=self.selected_period.get(), 
                         focus=self.selected_focus.get(), 
                         bgm_enabled=self.bgm_enabled.get(),
-                        json_path=self.SCAN_RESULTS,
-                        output_playlist_path=self.STORY_PLAYLIST,
+                        json_path=self.SCAN_RESULTS_FILE,
+                        output_playlist_path=self.PLAYLIST_FILE,
                         manual_bgm_path=manual_bgm
                     )
                     
                     self.log("\n--- ステップ 2/2: 動画をレンダリング中 ---")
                     render_story.render_documentary(
-                        playlist_path=self.STORY_PLAYLIST,
+                        playlist_path=self.PLAYLIST_FILE,
                         output_dir=self.OUTPUT_DIR,
                         blur_enabled=self.blur_enabled.get(),
                         filter_type=self.color_filter.get(),
@@ -1204,7 +1246,7 @@ class ModernDigestApp(ctk.CTk):
     def open_bgm_folder(self):
         """BGM格納フォルダを開く"""
         try:
-            bgm_dir = os.path.join(get_app_dir(), "bgm")
+            bgm_dir = os.path.join(self.user_data_dir, "bgm")
             os.makedirs(bgm_dir, exist_ok=True)
             if sys.platform == "darwin":
                 subprocess.call(["open", bgm_dir])
@@ -1225,11 +1267,24 @@ class ModernDigestApp(ctk.CTk):
             for widget in self.bgm_list_frame.winfo_children():
                 widget.destroy()
             
-            # Look in root bgm/ directory
-            bgm_dir = os.path.join(get_app_dir(), "bgm")
+            # Determine BGM directory (Writable)
+            bgm_dir = os.path.join(self.user_data_dir, "bgm")
             if not os.path.exists(bgm_dir):
-                return
+                os.makedirs(bgm_dir, exist_ok=True)
                 
+            # Migration/Fallback: Copy default BGM from Resources if destination is empty
+            resource_bgm_dir = os.path.join(self.app_dir, "bgm")
+            if not os.listdir(bgm_dir) and os.path.exists(resource_bgm_dir):
+                import shutil
+                try:
+                    for item in os.listdir(resource_bgm_dir):
+                        s = os.path.join(resource_bgm_dir, item)
+                        d = os.path.join(bgm_dir, item)
+                        if os.path.isfile(s):
+                            shutil.copy2(s, d)
+                except Exception as e:
+                    print(f"Failed to copy default BGM: {e}")
+
             files = []
             for ext in ["*.wav", "*.mp3", "*.m4a"]:
                 files.extend(glob.glob(os.path.join(bgm_dir, ext)))
@@ -1316,8 +1371,8 @@ class ModernDigestApp(ctk.CTk):
     def delete_single_bgm(self, filename):
         if messagebox.askyesno("確認", f"BGM '{filename}' を削除しますか？"):
             try:
-                # Use root bgm/ directory
-                path = os.path.join(get_app_dir(), "bgm", filename)
+                # Use user data bgm/ directory
+                path = os.path.join(self.user_data_dir, "bgm", filename)
                 if os.path.exists(path):
                     os.remove(path)
                     self.log(f"[INFO] Deleted BGM: {filename}")
@@ -1517,25 +1572,25 @@ class ModernDigestApp(ctk.CTk):
         from utils import load_json_safe
         
         # 基本的なキャッシュチェック
-        if os.path.exists(self.SCAN_RESULTS):
-            mtime = os.path.getmtime(self.SCAN_RESULTS)
+        if os.path.exists(self.SCAN_RESULTS_FILE):
+            mtime = os.path.getmtime(self.SCAN_RESULTS_FILE)
             if self.cached_scan_data and mtime == self.cached_scan_mtime:
                 return self.cached_scan_data
         
         # 安全な回避策付きロード
-        data = load_json_safe(self.SCAN_RESULTS, lambda: None)
+        data = load_json_safe(self.SCAN_RESULTS_FILE, lambda: None)
         
         if data:
             self.cached_scan_data = data
-            if os.path.exists(self.SCAN_RESULTS):
-                self.cached_scan_mtime = os.path.getmtime(self.SCAN_RESULTS)
+            if os.path.exists(self.SCAN_RESULTS_FILE):
+                self.cached_scan_mtime = os.path.getmtime(self.SCAN_RESULTS_FILE)
         
         return data
 
     def get_face_thumbnail(self, video_path, timestamp, face_loc):
         """指定された動画のタイムスタンプ＋座標から、お顔のサムネイルを取得/生成する (utils共通ロジックを使用)"""
-        from utils import generate_face_thumbnail, get_app_dir
-        return generate_face_thumbnail(video_path, timestamp, face_loc, get_app_dir())
+        from utils import generate_face_thumbnail
+        return generate_face_thumbnail(video_path, timestamp, face_loc, self.PROFILES_DIR)
 
     def show_person_clips(self, person_name, restart=True, target_y=None, target_page=None):
         """特定の人物の全ヒットクリップを表示する (Pagination対応 / スクロール復元対応)"""
@@ -1925,8 +1980,8 @@ if __name__ == "__main__":
     except Exception as e:
         import traceback
         try:
-            from utils import get_app_dir
-            crash_log = os.path.join(get_app_dir(), "crash_log.txt")
+            from utils import get_user_data_dir
+            crash_log = os.path.join(get_user_data_dir(), "crash_log.txt")
             with open(crash_log, "a", encoding="utf-8") as f:
                 f.write(f"\n--- Crash at {time.ctime()} ---\n")
                 traceback.print_exc(file=f)

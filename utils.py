@@ -37,6 +37,25 @@ def get_app_dir():
         # Normal script
         return os.path.dirname(os.path.abspath(__file__))
 
+def get_user_data_dir():
+    """Returns a writable user data directory (Documents/Omokage)"""
+    app_name = "Omokage"
+    if sys.platform == "win32":
+        # Use %APPDATA%
+        base_dir = os.getenv('APPDATA') or os.path.expanduser("~")
+        data_dir = os.path.join(base_dir, app_name)
+    elif sys.platform == "darwin":
+        # User requested to use Documents/Omokage
+        base_dir = os.path.expanduser("~/Documents")
+        data_dir = os.path.join(base_dir, app_name)
+    else:
+        base_dir = os.path.expanduser("~")
+        data_dir = os.path.join(base_dir, f".{app_name.lower()}")
+    
+    if not os.path.exists(data_dir):
+        os.makedirs(data_dir, exist_ok=True)
+    return data_dir
+
 def save_json_atomic(file_path, data):
     """ Save JSON to a temporary file and then replace the target file atomically. """
     temp_path = file_path + ".tmp"

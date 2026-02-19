@@ -4,11 +4,27 @@ import sys
 import cv2
 from datetime import datetime
 
+
+
+from utils import get_user_data_dir
+
 def load_scan_results(json_path='scan_results.json'):
     if not os.path.exists(json_path):
         return None
     with open(json_path, 'r', encoding='utf-8') as f:
         return json.load(f)
+
+def main():
+    # --- PATH SETUP ---
+    user_data_dir = get_user_data_dir()
+    
+    # Load Data from User Data Dir
+    scan_results_path = os.path.join(user_data_dir, "scan_results.json")
+    config_path = os.path.join(user_data_dir, "config.json")
+    playlist_path = os.path.join(user_data_dir, "story_playlist.json")
+
+    # Load Config to check target
+    # config = load_config(config_path) # Assuming load_config is defined elsewhere or will be added
 
 def create_story(person_name, period="All Time", focus="Balance", bgm_enabled=False, json_path='scan_results.json', output_playlist_path='story_playlist.json', manual_bgm_path=""):
     print(f"DEBUG: create_story received manual_bgm_path = '{manual_bgm_path}'")
