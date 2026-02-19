@@ -392,8 +392,12 @@ def render_documentary(playlist_path='story_playlist.json', config_path='config.
                     # Use ffmpeg to transcode to wav (strips messy metadata and ensures decodeability)
                     # ffmpeg -i input -y output
                     # -vn: disable video, -acodec pcm_s16le: standard wav
+                    # Use imageio_ffmpeg to get the binary path
+                    import imageio_ffmpeg
+                    ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+                    
                     cmd = [
-                        "ffmpeg", 
+                        ffmpeg_exe, 
                         "-y", 
                         "-i", bgm_file, 
                         "-vn", 
@@ -404,9 +408,17 @@ def render_documentary(playlist_path='story_playlist.json', config_path='config.
                         temp_bgm_path
                     ]
                     
-                    print(f"  BGM再変換中 (ffmpeg)...")
+                    print(f"  BGM再変換中 (ffmpeg: {ffmpeg_exe})...")
                     # Run ffmpeg
-                    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    # On Windows, subprocess need proper handling for paths with spaces if not in list, but list is fine.
+                    # Also need to ensure no console window for calling ffmpeg if possible, but subprocess.run usually fine.
+                    # Startupsinfo to hide console window on Windows
+                    startupinfo = None
+                    if os.name == 'nt':
+                        startupinfo = subprocess.STARTUPINFO()
+                        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                        
+                    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, startupinfo=startupinfo)
                     
                     if result.returncode != 0:
                         print(f"  Warning: ffmpeg conversion failed. Using original file copy method.")
@@ -474,10 +486,14 @@ def render_documentary(playlist_path='story_playlist.json', config_path='config.
                     print(f"  BGMミキシングエラー: {e}")
                     print(f"  BGMなしで続行します...")
         
+        # Generate a safe temp audio path in the output directory
+        temp_audio_path = os.path.join(os.path.dirname(output_path), "temp_audio_mpy.m4a")
+        
         # --- Absolute Stability: pix_fmt yuv420p, audio_fps, threads ---
         final_video.write_videofile(output_path, codec='libx264', audio_codec='aac', 
                                     fps=24, audio_fps=44100, threads=4,
                                     preset='ultrafast',
+                                    temp_audiofile=temp_audio_path, remove_temp=True,
                                     ffmpeg_params=["-pix_fmt", "yuv420p"])
         print(f"\n>>> DOCUMENTARY GENERATED: {output_path}")
     except Exception as e:
