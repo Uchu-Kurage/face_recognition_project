@@ -8,9 +8,11 @@ __pycache__/
 .venv/
 venv/
 env/
+.venv_bgm/
 
 # --- ファイル作成・スキャンデータ（ローカル情報） ---
 scan_results.json
+scan_results_*.json
 story_playlist.json
 target_faces.pkl
 config.json
@@ -41,6 +43,7 @@ assets/profiles/
 # --- PyInstaller ---
 build/
 dist/
+crash_log.txt
 # specファイルはGitHub Actionsでのビルドに必要なので含める
 # *.spec  <- コメントアウトまたは削除
 

@@ -7,6 +7,12 @@ import cv2
 import numpy as np
 from datetime import datetime
 
+def load_config(config_path='config.json'):
+    if os.path.exists(config_path):
+        with open(config_path, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    return {}
+
 def resource_path(relative_path):
     """ Get absolute path to resource, works for dev and for PyInstaller """
     try:

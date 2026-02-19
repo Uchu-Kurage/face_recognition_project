@@ -158,17 +158,6 @@ def create_story(person_name, period="All Time", focus="Balance", bgm_enabled=Fa
                         
         return picked
 
-    # タイムラインを4つのセグメントに分割
-    total_count = len(all_clips)
-    idx_ki = max(1, int(total_count * 0.2))
-    idx_sho = max(idx_ki + 1, int(total_count * 0.65))
-    idx_ten = max(idx_sho + 1, int(total_count * 0.9))
-
-    ki_segment = all_clips[:idx_ki]
-    sho_segment = all_clips[idx_ki:idx_sho]
-    ten_segment = all_clips[idx_sho:idx_ten]
-    ketsu_segment = all_clips[idx_ten:]
-
     # Focus の正規化 (UIは日本語、内部は英語で判定していたため)
     focus_map = {
         "バランス": "Balance",
@@ -176,66 +165,81 @@ def create_story(person_name, period="All Time", focus="Balance", bgm_enabled=Fa
         "動き": "Active",
         "感動": "Emotional"
     }
-    focus = focus_map.get(focus, focus) # 日本語なら英語に、そうでなければそのまま
+    focus = focus_map.get(focus, focus)
+
+    # --- Step 1: ユーザーの重視項目（Focus）による事前フィルタリング ---
+    filtered_clips = []
+    if focus == "Smile":
+        filtered_clips = [c for c in all_clips if c["happy"] >= 0.5]
+        filter_msg = "笑顔率 50%以上"
+    elif focus == "Emotional":
+        filtered_clips = [c for c in all_clips if c["drama"] >= 0.5]
+        filter_msg = "ドラマ度 50%以上"
+    elif focus == "Active":
+        filtered_clips = [c for c in all_clips if c["motion"] >= 3.0]
+        filter_msg = "動き 3.0以上"
+    else: # Balance
+        filtered_clips = all_clips
+        filter_msg = "制限なし（バランス）"
+
+    # --- Step 1.5: フォールバック処理 (クリップが少なすぎる場合) ---
+    if focus != "Balance" and len(filtered_clips) < 20:
+        print(f"  Warning: '{filter_msg}' でのフィルタリング結果が {len(filtered_clips)} 件と少なすぎるため、全クリップを使用します。")
+        filtered_clips = all_clips
+    elif focus != "Balance":
+        print(f"  Info: '{filter_msg}' により {len(all_clips)} 件 -> {len(filtered_clips)} 件に絞り込みました。")
+
+    # --- Step 2: 絞り込まれたリストを時系列で再計算し、起承転結に分割 ---
+    total_count = len(filtered_clips)
+    idx_ki = max(1, int(total_count * 0.2))
+    idx_sho = max(idx_ki + 1, int(total_count * 0.65))
+    idx_ten = max(idx_sho + 1, int(total_count * 0.9))
+
+    ki_segment = filtered_clips[:idx_ki]
+    sho_segment = filtered_clips[idx_ki:idx_sho]
+    ten_segment = filtered_clips[idx_sho:idx_ten]
+    ketsu_segment = filtered_clips[idx_ten:]
 
     # Focusに応じた選択ロジック (構造 × スタイルのマトリックススコアリング)
     def get_key_func(part):
         def score_clip(x):
             # 1. 構造によるベーススコア (0.0 ~ 1.0)
-            # 全てのフェーズで画質（visual_score）を基礎とする
             base = x.get("visual_score", 5.0) / 10.0
             
-            # 2. 構造上の役割に応じた重み付け (Structural Weights)
+            # 2. 構造上の役割に応じた重み付け
             struct_weight = 1.0
             if part == "起":
-                # 導入は穏やかなシーンを極めて優先
                 if x.get("vibe") != "穏やか": struct_weight *= 0.3
-            elif part == "承":
-                # 中盤はバリエーション。特に強い制約なし
-                pass
-            elif part == "転":
-                # 盛り上がり。静かすぎるシーンは少し評価を下げる
-                if x.get("vibe") == "穏やか" and x.get("happy", 0) < 0.5:
-                    struct_weight *= 0.7
             elif part == "結":
-                # 締め。お顔がしっかり写っている（face_ratio）ことを重視
                 ratio = x.get("face_ratio", 1.0)
-                if ratio > 3.0: struct_weight *= 1.5 # アップなら加点
-                if x.get("vibe") != "穏やか": struct_weight *= 0.5 # 穏やかで締める
+                if ratio > 3.0: struct_weight *= 1.5
+                if x.get("vibe") != "穏やか": struct_weight *= 0.5
 
-            # 3. ユーザーの重視項目（Focus Style）による加点 (0.0 ~ 2.0)
+            # 3. Focus Style による加点 (フィルタ済みだが、その中でもより良いものを選ぶ)
             style_bonus = 0.0
             if focus == "Smile":
                 style_bonus = x.get("happy", 0) * 2.0
             elif focus == "Active":
-                # 動きの大きさを正規化 (0~10想定を0~2に)
                 style_bonus = (x.get("motion", 0) / 5.0)
             elif focus == "Emotional":
-                # ドラマチック度とアップの度合い
                 style_bonus = x.get("drama", 0) + (x.get("face_ratio", 0) / 10.0)
-            else: # Balance
-                # 全てをバランスよく (平均的に加点)
+            else:
                 style_bonus = (x.get("happy", 0) + x.get("drama", 0) + (x.get("motion", 0)/10.0)) / 1.5
 
             total_score = (base * struct_weight) + style_bonus
-            # 詳細な内訳を返す
             return total_score, {
                 "base": round(base, 2),
                 "struct": round(struct_weight, 2),
                 "style": round(style_bonus, 2)
             }
-            
         return score_clip
 
     # [起] Intro: 2 clips
     ki = pick_unique(ki_segment, 2, get_key_func("起"))
-
     # [承] Development: 10 clips
     sho = pick_unique(sho_segment, 10, get_key_func("承"))
-
     # [転] Twist/Climax: 6 clips
     ten = pick_unique(ten_segment, 6, get_key_func("転"))
-
     # [結] Conclusion: 2 clips
     ketsu = pick_unique(ketsu_segment, 2, get_key_func("結"))
 
@@ -313,11 +317,6 @@ def create_story(person_name, period="All Time", focus="Balance", bgm_enabled=Fa
         elif clip in ketsu: phase = "結"
         
         print(f"[{phase}] {os.path.basename(clip['video_path'])} @ {clip['t']}s (Time: {clip['timestamp']}, Happy: {clip['happy']})")
-        
-        # スコアの内訳があれば表示
-        if "_score_breakdown" in clip:
-            b = clip["_score_breakdown"]
-            print(f"    └─ Score: {clip.get('_total_score', 0):.2f} (Base: {b['base']}, Struct: {b['struct']}, Style: {b['style']})")
 
     # Save playlist to a file for render_story to read
     playlist_data = {

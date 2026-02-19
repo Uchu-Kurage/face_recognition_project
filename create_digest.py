@@ -1,5 +1,7 @@
 import os
 import sys
+import json
+import pickle
 from moviepy.editor import VideoFileClip, concatenate_videoclips, ColorClip, CompositeVideoClip
 import cv2
 import numpy as np
@@ -18,11 +20,7 @@ def load_scan_results(json_path='scan_results.json'):
     return data
 
 
-def load_config(config_path='config.json'):
-    if os.path.exists(config_path):
-        with open(config_path, 'r', encoding='utf-8') as f:
-            return json.load(f)
-    return {}
+from utils import load_config
 
 def apply_blur(frame, target_encodings, blur_enabled):
     if not blur_enabled:
@@ -57,40 +55,13 @@ def apply_blur(frame, target_encodings, blur_enabled):
             
     return processed_frame
 
-def apply_color_filter(frame, filter_type):
-    if filter_type == "None":
-        return frame
-    
-    # frame is HxWx3 (RGB)
-    img = frame.astype(np.float32)
-    
-    if filter_type == "Film":
-        # コントラストを上げ、わずかに青みを追加。彩度を抑える
-        # f = (259 * (c + 255)) / (255 * (259 - c))
-        # ここでは簡易的に 
-        img = img * 1.1 - 10 # Contrast & Brightness
-        img[:,:,2] *= 1.1 # Blue channel (RGB: R=0, G=1, B=2)
-        img = np.clip(img, 0, 255)
-        
-    elif filter_type == "Sunset":
-        # 温かみ（オレンジ・ゴールド）を追加
-        img[:,:,0] *= 1.2 # Red
-        img[:,:,1] *= 1.1 # Green
-        img[:,:,2] *= 0.8 # Blue (reduce)
-        img = np.clip(img, 0, 255)
-    
-    return img.astype(np.uint8)
-
-def create_digest(scan_results_path, target_person_name=None, config_path='config.json', base_output_dir='output', period="All Time", focus="Balance", blur_enabled=None, filter_type=None):
+def create_digest(scan_results_path, target_person_name=None, config_path='config.json', base_output_dir='output', period="All Time", focus="Balance", blur_enabled=None):
     results = load_scan_results(scan_results_path)
     config = load_config(config_path)
     
     # 引数、環境変数、Configの順で優先
     if blur_enabled is None:
         blur_enabled = str(os.environ.get("DIGEST_BLUR", config.get("blur_enabled", False))).lower() in ("1", "true", "yes")
-        
-    if filter_type is None:
-        filter_type = os.environ.get("DIGEST_FILTER", config.get("color_filter", "None"))
     
     # ターゲットのエンコーディングをロード（ぼかし判定用）
     target_encodings = {}
@@ -149,7 +120,7 @@ def create_digest(scan_results_path, target_person_name=None, config_path='confi
             # 出力ディレクトリ作成: output/YYYY-MM/PersonName/
             output_dir = os.path.join(base_output_dir, month_str, person_name)
             os.makedirs(output_dir, exist_ok=True)
-            output_path = os.path.join(output_dir, f"digest_{person_name}_{month_str}.mp4")
+            output_path = os.path.join(output_dir, f"digest_{person_name}_{month_str}_{focus}.mp4")
 
             final_clips = []
             
@@ -161,40 +132,48 @@ def create_digest(scan_results_path, target_person_name=None, config_path='confi
                     video = VideoFileClip(video_path)
                     duration = video.duration
                     
-                    # 最も笑顔スコアが高いものを1つ選ぶ
-                    # detections は [{"t": 1.2, "happy": 0.8}, ...] のリスト
-                    best_detection = max(detections, key=lambda x: x.get('happy', 0))
+                    # 重視項目（Focus）に応じたスコアリング関数
+                    def get_score_func(f):
+                        if f == "Smile":
+                            return lambda x: x.get('happy', 0)
+                        elif f == "Emotional":
+                            return lambda x: x.get('drama', 0)
+                        elif f == "Active":
+                            return lambda x: x.get('motion', 0)
+                        else: # Balance
+                            return lambda x: (x.get('happy', 0) + x.get('drama', 0) + (x.get('motion', 0)/10.0)) / 2.0
+
+                    score_func = get_score_func(focus)
+                    best_detection = max(detections, key=score_func)
                     best_t = best_detection['t']
                     
                     # 前後1.5秒（計3秒）を切り抜く
                     start = max(0, best_t - 1.5)
                     end = min(duration, best_t + 1.5)
                     
-                    print(f"  抽出中: {os.path.basename(video_path)} @ {best_t}s (Score: {best_detection.get('happy', 0)})")
+                    print(f"  抽出中: {os.path.basename(video_path)} @ {best_t}s (Focus: {focus}, Score: {score_func(best_detection):.2f})")
                     clip = video.subclip(start, end)
                     
                     # --- 究極の解像度正規化 (1280x720 キャンバス固定) ---
-                    # 1. 最初に回転を修正 (これが完了した時点で w と h が正しい向きに入れ替わる)
-                    if hasattr(clip, 'rotation') and clip.rotation != 0:
-                        clip = clip.rotate(clip.rotation)
-
+                    # 1. 回転を「無効」にし、MoviePyが読み取った生のピクセルサイズを維持する
+                    # (縦長・横長にかかわらず、読み取った w, h をそのまま使う)
                     orig_w, orig_h = clip.size
                     target_w, target_h = 1280, 720
-                    print(f"    [DEBUG] After Rotate: {orig_w}x{orig_h}, Ratio: {orig_w/orig_h:.3f}")
-
-                    # 2. 正しいアスペクト比を維持したまま 1280x720 に収める
-                    if (orig_w / orig_h) > (target_w / target_h):
-                        # 横長 -> 横幅を固定
-                        clip = clip.resize(width=target_w)
-                    else:
-                        # 縦長 -> 縦幅を固定
-                        clip = clip.resize(height=target_h)
                     
+                    # 2. 比率を「絶対に」維持して 1280x720 に収まる倍率を計算
+                    scale = min(target_w / orig_w, target_h / orig_h)
+                    
+                    # 3. リサイズ実行 (倍率指定リサイズはアス比が崩れない)
+                    clip = clip.resize(scale)
                     new_w, new_h = clip.size
-                    print(f"    [DEBUG] Resized: {new_w}x{new_h}, Final Ratio: {new_w/new_h:.3f}")
+                    print(f"    [DEBUG] Normalizing: {orig_w}x{orig_h} -> {new_w}x{new_h} (Scale: {scale:.3f})")
 
-                    # 3. 1280x720の黒背景の中央に配置 (レターボックス/ピラーボックス)
-                    clip = clip.on_color(size=(target_w, target_h), color=(0,0,0), pos="center")
+                    # 4. 1280x720の黒背景の中央に配置 (CompositeVideoClipでガチガチに固める)
+                    from moviepy.editor import ColorClip
+                    bg_clip = ColorClip(size=(target_w, target_h), color=(0,0,0)).set_duration(clip.duration)
+                    clip = CompositeVideoClip([bg_clip, clip.set_position("center")])
+                    
+                    # 5. テクニカル同期
                     clip = clip.set_fps(24)
                     
                     # --- 音声と時間の厳密な同期 ---
@@ -202,17 +181,11 @@ def create_digest(scan_results_path, target_person_name=None, config_path='confi
                         clip.audio = clip.audio.set_fps(44100)
                     clip = clip.set_duration(3.0)
 
-                    # カラーフィルター適用
-                    if filter_type != "None":
-                        clip = clip.fl_image(lambda f: apply_color_filter(f, filter_type))
-                    
-                    # 顔ぼかし適用（RGBフレームで届くので、内部でBGRに変換して処理する）
                     # 顔ぼかし適用
                     if blur_enabled:
                         clip = clip.fl_image(lambda f: apply_blur(f, target_encodings, blur_enabled))
 
                     # 日付テロップ適用 (メタデータから取得)
-                    # 日付テロップ適用 (メタデータから取得 or ファイルmtime)
                     date_str = ""
                     meta = results.get("metadata", {}).get(video_path, {})
                     v_date = meta.get("date", meta.get("month", ""))
@@ -299,13 +272,11 @@ if __name__ == "__main__":
     parser.add_argument("--person", default=None)
     parser.add_argument("--blur", action="store_true")
     parser.add_argument("--no-blur", action="store_false", dest="blur")
-    parser.add_argument("--filter", default="None")
     parser.add_argument("--period", default="All Time")
     parser.add_argument("--focus", default="Balance")
     args = parser.parse_args()
 
     # コマンドライン引数を優先
     os.environ["DIGEST_BLUR"] = "1" if args.blur else "0"
-    os.environ["DIGEST_FILTER"] = args.filter
 
     create_digest(args.json, target_person_name=args.person, period=args.period, focus=args.focus)

@@ -570,14 +570,17 @@ class ModernDigestApp(ctk.CTk):
 
         self.sw_bgm = ctk.CTkSwitch(self.set_section, text="BGMを合成", variable=self.bgm_enabled, 
                                      progress_color=self.COLOR_ACCENT, command=self.save_config)
-        self.sw_bgm.pack(pady=(5, 12))
+        self.sw_bgm.pack(pady=(5, 0))
+        
+        ctk.CTkLabel(self.set_section, text="※ドキュメンタリー機能のみ有効", 
+                     text_color="gray75", font=ctk.CTkFont(size=10)).pack(pady=(0, 12))
 
         # 3. 生成アクション (右列)
         self.gen_section = ctk.CTkFrame(self.edit_frame, fg_color=self.COLOR_SIDEBAR, corner_radius=15)
         self.gen_section.grid(row=0, column=2, sticky="nsew", padx=10, pady=10)
         ctk.CTkLabel(self.gen_section, text="3. 動画生成", text_color=self.COLOR_ACCENT, font=ctk.CTkFont(size=14, weight="bold")).pack(pady=(12, 5))
         
-        self.btn_gen_digest = ctk.CTkButton(self.gen_section, text="ダイジェスト", image=self.icon_video, 
+        self.btn_gen_digest = ctk.CTkButton(self.gen_section, text="月間ダイジェスト", image=self.icon_video, 
                                             compound="left", command=self.start_digest_only, height=35, font=ctk.CTkFont(size=12, weight="bold"),
                                             fg_color=self.COLOR_ACCENT, hover_color=self.COLOR_HOVER, text_color="black")
         self.btn_gen_digest.pack(pady=10, padx=20, fill="x")
@@ -1125,6 +1128,13 @@ class ModernDigestApp(ctk.CTk):
         if person == "選択してください..." or person == "プロフィールが見つかりません":
             self.log("__NOTIFY__", title="警告", message="人物を選択してください。", type="warning")
             return
+            
+        # 期間のバリデーション (月が選択されているか)
+        period = self.selected_period.get()
+        if len(period) != 7 or "-" not in period: # YYYY-MM 形式でなければエラー
+            self.log("__NOTIFY__", title="エラー", message="月間ダイジェストを作成するには、特定の「月（YYYY-MM）」を選択してください。\n現在は「年」全体が選択されています。", type="error")
+            return
+
         if self.is_running: return
 
         self.btn_gen_digest.configure(state="disabled", text="生成中...")
@@ -1146,7 +1156,6 @@ class ModernDigestApp(ctk.CTk):
                         target_person_name=person,
                         base_output_dir=self.OUTPUT_DIR,
                         blur_enabled=self.blur_enabled.get(),
-                        filter_type=self.color_filter.get(),
                         period=self.selected_period.get(),
                         focus=self.selected_focus.get()
                     )
@@ -1208,7 +1217,8 @@ class ModernDigestApp(ctk.CTk):
                         output_dir=self.OUTPUT_DIR,
                         blur_enabled=self.blur_enabled.get(),
                         filter_type=self.color_filter.get(),
-                        bgm_enabled=self.bgm_enabled.get()
+                        bgm_enabled=self.bgm_enabled.get(),
+                        focus=self.selected_focus.get()
                     )
                 finally:
                     sys.stdout = current_stdout
@@ -1225,7 +1235,7 @@ class ModernDigestApp(ctk.CTk):
         threading.Thread(target=run).start()
 
     def reset_edit_ui(self):
-        self.btn_gen_digest.configure(state="normal", text="ダイジェスト")
+        self.btn_gen_digest.configure(state="normal", text="月間ダイジェスト")
         self.btn_gen_story.configure(state="normal", text="1分ドキュメンタリー")
         self.is_running = False
 

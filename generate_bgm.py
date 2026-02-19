@@ -45,32 +45,43 @@ def generate_bgm(vibe="穏やか", duration_seconds=30, output_dir="bgm", token=
     
     import random
     
-    # Vibeを英語プロンプトのリストにマッピング (ユーザー指定のプロンプトに刷新)
-    vibe_prompts_map = {
-        "穏やか": [
-            "Soft solo felt piano. Slow tempo, minimalist, gentle touch. Lullaby, warm, peaceful, relaxing, sleeping baby, intimate room sound. 60bpm. [Loopable]",
-            "Gentle solo accordion. Slow breathing pads, long sustain notes, soft melody. Warm, nostalgic, peaceful, relaxing atmosphere. 65bpm. [Loopable]",
-            "Slow duet of piano and accordion. Gentle waltz time (3/4), soft interaction. Relaxing, soothing, warm family moment. 70bpm. [Loopable]"
-        ],
-        "エネルギッシュ": [
-            "Upbeat duet of accordion and piano. Marching rhythm, bright and sunny melody. Energetic, happy, optimistic, outdoor picnic vibe. 125bpm.",
-            "Lively accordion-led melody with rhythmic piano backing. Fast folk dance, jig style. Energetic bellows, joyful, sunny, countryside vibe. 130bpm.",
-            "Fast-paced solo piano with light accordion accents. Major key arpeggios, bright and sparkling. Energetic, running children, pure joy. 135bpm."
-        ],
-        "感動的": [
-            "Cinematic emotional duet. Expressive piano arpeggios and nostalgic accordion melody. Builds to a crescendo. Touching, heart-warming, grand finale. 80bpm. [Non-looping]",
-            "Nostalgic solo accordion waltz. French musette style, expressive bellows. Melancholic, beautiful, bittersweet memory. Ends with a slow fade. 75bpm. [Non-looping]",
-            "Emotional solo grand piano. Simple but powerful melody. Expressive dynamics, reverb. Sentimental, touching, pure love. Ends with a long sustain chord. 70bpm. [Non-looping]"
-        ],
-        "かわいい": [
-            "Bright and happy ukulele and glockenspiel. Wholesome, pastel color vibe. Sunny Sunday morning, cute pets, relaxing and acoustic. 100bpm.",
-            "Playful solo acoustic guitar and light percussion. Innocent, heartwarming, kids playing in the park. Sweet, simple, and catchy melody. 110bpm.",
-            "Bouncy piano and recorder melody. Lighthearted, cute, and optimistic. Educational video background, pure joy, smiling faces. 120bpm."
-        ]
-    }
+# Vibeを英語プロンプトのリストにマッピング (ユーザー指定のプロンプトに刷新)
+VIBE_PROMPTS_MAP = {
+    "穏やか": [
+        "Format: Solo. Instrument: Grand Piano. Genre: Minimalist Classical, Neoclassical. Mood: Peaceful, Harmonious, Consonant, Serene, Uplifting. Details: High fidelity, studio recording, pristine sound, clear melody, simple arrangement, lyrical phrasing, reverb. BPM: 80."
+    ],
+    "エネルギッシュ": [
+        "Format: Instrumental. Genre: Corporate, Easy Listening. Instruments: Bright Grand Piano lead. Mood: Motivational, Inspiring, Positive, Success, Optimistic. Style: Advertising, Commercial, Podcast Intro. Details: Clean mix, balanced, simple melody, catchy hook, rhythmic but harmonious. BPM: 110."
+    ],
+    "感動的": [
+        "Format: Solo. Instrument: Steinway Grand Piano. Genre: Cinematic, Pop Ballad. Mood: Emotional, Heartfelt, Hopeful, Euphoric, Touching. Style: Movie Soundtrack, Film Score. Details: Featured melody, expressive performance, dynamic, well-arranged, harmonious, lush reverb. BPM: 90."
+    ],
+    "かわいい": [
+        "Children's Music, Kawaii, Upright Piano, Toy Piano, Cute, Playful, Whimsical, 110 BPM, C Major, High Octave, Simple Melody, Bouncy, Crisp, Dry Mix, Seamless Loop" 
+    ]
+}
 
-    choices = vibe_prompts_map.get(vibe, vibe_prompts_map["穏やか"])
-    prompt = random.choice(choices)
+# Default negative prompt to exclude drums/percussion/jazz/dissonance
+DEFAULT_NEGATIVE_PROMPT = "Drums, Percussion, Jazz, Dissonance, Atonal, Complex, Muddy, low quality, noise"
+
+def generate_bgm(vibe="穏やか", duration_seconds=30, output_dir="bgm", token=None, prompt_index=None, num_inference_steps=50, negative_prompt=None):
+    """
+    Stable Audio Open 1.0 を使用してBGMを生成し、WAVとして保存する。
+    """
+    from diffusers import StableAudioPipeline
+    
+    import random
+    
+    choices = VIBE_PROMPTS_MAP.get(vibe, VIBE_PROMPTS_MAP["穏やか"])
+    if prompt_index is not None and 0 <= prompt_index < len(choices):
+        idx = prompt_index
+    else:
+        idx = random.randint(0, len(choices) - 1)
+    prompt = choices[idx]
+    
+    # Use default negative prompt if none provided
+    if negative_prompt is None:
+        negative_prompt = DEFAULT_NEGATIVE_PROMPT
     
     # プロンプトの一部を抜粋してスタイル名として使用（ファイル名用）
     style_keywords = ["piano", "guitar", "synth", "violin", "lofi", "8-bit", "orchestra", "ambient"]
@@ -80,10 +91,11 @@ def generate_bgm(vibe="穏やか", duration_seconds=30, output_dir="bgm", token=
             detected_style = kw
             break
 
-    # Vibeに応じたベースファイル名
+    # Vibeに応じたベースファイル名 (番号 _P1, _P2 などを含める)
     base_name = vibe
+    p_tag = f"_P{idx+1}"
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"{base_name}_{detected_style}_{timestamp}.wav"
+    filename = f"{base_name}{p_tag}_{timestamp}.wav"
     
     # Ensure absolute path if it looks relative
     if not os.path.isabs(output_dir):
@@ -117,6 +129,8 @@ def generate_bgm(vibe="穏やか", duration_seconds=30, output_dir="bgm", token=
         print(f"  - Length:   {audio_duration:.1f}s (Model Limit: 47s)")
     print(f"  - Output:   {os.path.basename(output_path)}")
     print(f"  - Prompt:   {prompt}")
+    if negative_prompt:
+        print(f"  - Negative: {negative_prompt}")
     print(f"-"*50)
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -137,13 +151,18 @@ def generate_bgm(vibe="穏やか", duration_seconds=30, output_dir="bgm", token=
             token=token
         )
         pipe = pipe.to(device)
+
+        # Use EulerDiscreteScheduler for stability
+        from diffusers import EulerDiscreteScheduler
+        pipe.scheduler = EulerDiscreteScheduler.from_config(pipe.scheduler.config)
         
         # 生成
         print(f"  音楽を生成中...")
         # 生成実行
         output = pipe(
             prompt, 
-            num_inference_steps=50, 
+            negative_prompt=negative_prompt,
+            num_inference_steps=num_inference_steps, 
             audio_end_in_s=audio_duration
         ).audios
         print() # Force newline after tqdm progress bar
