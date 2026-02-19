@@ -90,7 +90,9 @@ def load_json_safe(file_path, default_factory):
         except Exception as e:
             print(f"Error: Failed to load backup JSON ({bk_path}): {e}")
             
-    return default_factory()
+    if callable(default_factory):
+        return default_factory()
+    return default_factory
 
 def generate_face_thumbnail(video_path, timestamp, face_loc, output_dir):
     """

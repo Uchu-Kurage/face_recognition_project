@@ -386,6 +386,7 @@ def run_scan(video_folder, target_pkl='target_faces.pkl', output_json=None, forc
                 results_per_person = future.result()
                 
                 # --- マージ保存 ---
+                # --- マージ保存 ---
                 final_data = load_json_safe(output_json, lambda: results)
                 mtime = os.path.getmtime(video_path)
                 dt = datetime.datetime.fromtimestamp(mtime)
