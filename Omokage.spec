@@ -38,10 +38,15 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=['pandas'],
     noarchive=False,
     optimize=0,
 )
+
+# Filter out massive tensorflow binary (libtensorflow_cc) to reduce size (standard on Mac)
+# Python bindings usually use libtensorflow_framework, so this might be safe.
+a.binaries = [x for x in a.binaries if 'libtensorflow_cc' not in x[0]]
+
 pyz = PYZ(a.pure)
 
 exe = EXE(
