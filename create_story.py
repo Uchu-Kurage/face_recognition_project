@@ -173,6 +173,18 @@ def create_story(person_name, period="All Time", focus="Balance", bgm_enabled=Fa
     }
     focus = focus_map.get(focus, focus)
 
+    # --- Step 0.5: 統計情報の出力 (各Focusへの該当件数を計算) ---
+    count_smile = len([c for c in all_clips if c["happy"] >= 0.5])
+    count_emotional = len([c for c in all_clips if c["drama"] >= 0.5])
+    count_active = len([c for c in all_clips if c["motion"] >= 3.0])
+    
+    print(f"\n--- 素材統計 (全 {len(all_clips)} シーン) ---")
+    print(f"  😊 笑顔 (Smile): {count_smile} シーン")
+    print(f"  🎬 感動 (Emotional): {count_emotional} シーン")
+    print(f"  ⚡ 動き (Active): {count_active} シーン")
+    print(f"  ⚖️ 全体 (Total): {len(all_clips)} シーン")
+    print(f"----------------------------------------\n")
+
     # --- Step 1: ユーザーの重視項目（Focus）による事前フィルタリング ---
     filtered_clips = []
     if focus == "Smile":
@@ -185,15 +197,19 @@ def create_story(person_name, period="All Time", focus="Balance", bgm_enabled=Fa
         filtered_clips = [c for c in all_clips if c["motion"] >= 3.0]
         filter_msg = "動き 3.0以上"
     else: # Balance
-        filtered_clips = all_clips
-        filter_msg = "制限なし（バランス）"
+        # 他の3つの条件（笑顔、感動、動き）のいずれにも該当しない「日常」シーンを抽出
+        filtered_clips = [c for c in all_clips if not (c["happy"] >= 0.5 or c["drama"] >= 0.5 or c["motion"] >= 3.0)]
+        filter_msg = "日常シーン（特徴的なクリップ以外）"
 
     # --- Step 1.5: フォールバック処理 (クリップが少なすぎる場合) ---
-    if focus != "Balance" and len(filtered_clips) < 20:
-        print(f"  Warning: '{filter_msg}' でのフィルタリング結果が {len(filtered_clips)} 件と少なすぎるため、全クリップを使用します。")
+    # Balance の場合も、フィルタリングの結果少なすぎれば全クリップに戻す
+    if len(filtered_clips) < 20:
+        print(f"  Warning: フィルタリング後の素材が {len(filtered_clips)} 件と少なすぎるため、全クリップを使用します。")
         filtered_clips = all_clips
     elif focus != "Balance":
         print(f"  Info: '{filter_msg}' により {len(all_clips)} 件 -> {len(filtered_clips)} 件に絞り込みました。")
+    else:
+        print(f"  Info: 'バランス'設定により日常シーン（{len(filtered_clips)}件）を対象にします。")
 
     # --- Step 2: 絞り込まれたリストを時系列で再計算し、起承転結に分割 ---
     total_count = len(filtered_clips)
@@ -223,13 +239,17 @@ def create_story(person_name, period="All Time", focus="Balance", bgm_enabled=Fa
 
             # 3. Focus Style による加点 (フィルタ済みだが、その中でもより良いものを選ぶ)
             style_bonus = 0.0
-            if focus == "Smile":
+            if focus == "Balance":
+                # バランスの場合はスコアリングせず一律（noisy_keyにより実質ランダム選択）
+                style_bonus = 1.0
+            elif focus == "Smile":
                 style_bonus = x.get("happy", 0) * 2.0
             elif focus == "Active":
                 style_bonus = (x.get("motion", 0) / 5.0)
             elif focus == "Emotional":
                 style_bonus = x.get("drama", 0) + (x.get("face_ratio", 0) / 10.0)
             else:
+                # 予備
                 style_bonus = (x.get("happy", 0) + x.get("drama", 0) + (x.get("motion", 0)/10.0)) / 1.5
 
             total_score = (base * struct_weight) + style_bonus
