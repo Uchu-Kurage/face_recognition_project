@@ -692,19 +692,12 @@ class ModernDigestApp(ctk.CTk):
         elif name == "about":
             self.about_frame.grid(row=0, column=0, sticky="nsew")
 
-    def load_scan_results(self):
-        if os.path.exists(self.SCAN_RESULTS_FILE):
-            try:
-                with open(self.SCAN_RESULTS_FILE, 'r', encoding='utf-8') as f:
-                    return json.load(f)
-            except:
-                pass
-        return {}
+    # --- Consolidated Methods moved to line 1568 ---
         
     def save_scan_results(self, data):
+        from utils import save_json_atomic
         try:
-            with open(self.SCAN_RESULTS_FILE, 'w', encoding='utf-8') as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
+            save_json_atomic(self.SCAN_RESULTS_FILE, data)
         except Exception as e:
             print(f"Error saving scan results: {e}")
 
@@ -1123,7 +1116,7 @@ class ModernDigestApp(ctk.CTk):
                 
                 try:
                     create_digest.create_digest(
-                        self.SCAN_RESULTS, 
+                        self.SCAN_RESULTS_FILE, 
                         target_person_name=person,
                         base_output_dir=self.OUTPUT_DIR,
                         blur_enabled=self.blur_enabled.get(),
@@ -1906,7 +1899,7 @@ class ModernDigestApp(ctk.CTk):
         if not messagebox.askyesno("確認", f"選択された {count} 件を削除しますか？"): return
         try:
             from utils import load_json_safe, save_json_atomic
-            data = load_json_safe(self.SCAN_RESULTS, lambda: {"people": {}, "metadata": {}})
+            data = load_json_safe(self.SCAN_RESULTS_FILE, lambda: {"people": {}, "metadata": {}})
             person_name = self.last_person_viewed
             if person_name in data["people"]:
                 person_data = data["people"][person_name]
@@ -1914,7 +1907,7 @@ class ModernDigestApp(ctk.CTk):
                     if vp in person_data:
                         person_data[vp] = [d for d in person_data[vp] if abs(d['t'] - ts) > 0.01]
                         if not person_data[vp]: del person_data[vp]
-                save_json_atomic(self.SCAN_RESULTS, data)
+                save_json_atomic(self.SCAN_RESULTS_FILE, data)
                 self.all_person_clips = [c for c in self.all_person_clips if (c['path'], c['t']) not in self.selected_clips]
                 self.selected_clips = set()
                 self.cached_scan_data = None
@@ -1928,11 +1921,11 @@ class ModernDigestApp(ctk.CTk):
         if not messagebox.askyesno("確認", "このカットを削除しますか？"): return
         try:
             from utils import load_json_safe, save_json_atomic
-            data = load_json_safe(self.SCAN_RESULTS, lambda: {"people": {}, "metadata": {}})
+            data = load_json_safe(self.SCAN_RESULTS_FILE, lambda: {"people": {}, "metadata": {}})
             if person_name in data["people"] and video_path in data["people"][person_name]:
                 data["people"][person_name][video_path] = [d for d in data["people"][person_name][video_path] if abs(d['t'] - timestamp) > 0.01]
                 if not data["people"][person_name][video_path]: del data["people"][person_name][video_path]
-                save_json_atomic(self.SCAN_RESULTS, data)
+                save_json_atomic(self.SCAN_RESULTS_FILE, data)
                 self.all_person_clips = [c for c in self.all_person_clips if not (c['path'] == video_path and abs(c['t'] - timestamp) < 0.01)]
                 self.cached_scan_data = None
                 if row_widget: row_widget.destroy()

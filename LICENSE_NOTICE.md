@@ -6,10 +6,19 @@
 Omokage 本体は MIT ライセンスの下で提供されます。
 
 ### 主要なライブラリ
-- **face_recognition / dlib**: MIT / Boost Software License
-- **MoviePy / OpenCV**: MIT / Apache 2.0 License
 - **CustomTkinter**: MIT License
-- **PyTorch / Transformers**: BSD / Apache 2.0 License
+- **face_recognition**: MIT License
+- **dlib**: Boost Software License
+- **MoviePy**: MIT License
+- **OpenCV**: Apache 2.0 License
+- **ONNX Runtime**: MIT License
+- **NumPy**: BSD License
+- **Pillow (PIL)**: HPND License
+- **pygame**: LGPL License
+- **imageio-ffmpeg**: MIT License
+
+## 2. フォント
+- **Noto Sans JP**: SIL Open Font License (OFL) 1.1
 
 ---
 © 2026 Omokage Team / AI Memory Lane Project

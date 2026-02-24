@@ -8,16 +8,73 @@ import glob
 import datetime
 import os
 
+import multiprocessing
+import concurrent.futures
+from concurrent.futures import ProcessPoolExecutor
 import numpy as np
 
-# 感情分析用ライブラリを遅延インポート
-deepface_ready = False
-def init_deepface():
-    global DeepFace, deepface_ready
-    if not deepface_ready:
-        print("  ... Initializing DeepFace ...")
-        from deepface import DeepFace
-        deepface_ready = True
+# 感情分析用ライブラリ（ONNX）を遅延インポート
+emotion_analyzer = None
+
+class EmotionAnalyzer:
+    def __init__(self, model_path):
+        import onnxruntime as ort
+        self.session = ort.InferenceSession(model_path)
+        self.input_name = self.session.get_inputs()[0].name
+        self.emotion_table = {
+            0: 'neutral', 1: 'happiness', 2: 'surprise', 3: 'sadness',
+            4: 'anger', 5: 'disgust', 6: 'fear', 7: 'contempt'
+        }
+
+    def analyze(self, img_bgr):
+        # Preprocess: Gray -> Resize (64x64) -> Normalize
+        if len(img_bgr.shape) == 3:
+            gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+        else:
+            gray = img_bgr
+            
+        resized = cv2.resize(gray, (64, 64))
+        # ImageNet mean/std equivalent for specialized model or simple 0-1 scaling
+        # FER+ model typically expects float32 input [1, 1, 64, 64]
+        img_arr = resized.astype(np.float32)
+        img_arr = img_arr[np.newaxis, np.newaxis, :, :]
+        
+        # Run inference
+        outputs = self.session.run(None, {self.input_name: img_arr})
+        scores = outputs[0][0] # Logits
+        
+        # Softmax
+        exp_scores = np.exp(scores - np.max(scores))
+        probs = exp_scores / exp_scores.sum()
+        
+        emotion_dict = {}
+        for i, prob in enumerate(probs):
+            if i in self.emotion_table:
+                # Map keys to match DeepFace output format somewhat
+                key = self.emotion_table[i]
+                if key == 'happiness': key = 'happy'
+                if key == 'sadness': key = 'sad'
+                if key == 'anger': key = 'angry'
+                emotion_dict[key] = float(prob * 100.0)
+                
+        return {'emotion': emotion_dict}
+
+def init_emotion_analyzer():
+    global emotion_analyzer
+    if emotion_analyzer is None:
+        try:
+            model_path = os.path.join(get_app_dir(), "assets", "models", "emotion-ferplus-8.onnx")
+            if not os.path.exists(model_path):
+                # Fallback check for dev environment
+                model_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "models", "emotion-ferplus-8.onnx")
+            
+            if os.path.exists(model_path):
+                print(f"  ... Initializing EmotionAnalyzer (ONNX) ...")
+                emotion_analyzer = EmotionAnalyzer(model_path)
+            else:
+                print(f"  Warning: ONNX model not found at {model_path}")
+        except Exception as e:
+            print(f"  Error initializing EmotionAnalyzer: {e}")
 
 def calculate_visual_score(frame):
     """画質の良さや構図を簡易評価 (1-10)"""
@@ -42,6 +99,7 @@ def infer_description_vibe(emotion_data, motion=0.0, face_ratio=0.0, visual_scor
     dominant = max(emotion_data, key=emotion_data.get)
     happy = emotion_data.get('happy', 0)
     surprise = emotion_data.get('surprise', 0)
+    # Mapping fix: 'sad' vs 'sadness' depending on model, handled in Analyzer
     drama = (emotion_data.get('surprise', 0) + emotion_data.get('sad', 0) + 
              emotion_data.get('angry', 0) + emotion_data.get('fear', 0))
 
@@ -136,7 +194,7 @@ def scan_video(video_path, target_data, check_interval_sec=0.5, resize_scale=0.5
     """
     # { "Name": [timestamps...] }
     results_per_person = {name: [] for name in target_data.keys()}
-    init_deepface() # 感情分析の準備
+    init_emotion_analyzer() # 感情分析の準備 (ONNX)
     
     # 動画を開く
     cap = cv2.VideoCapture(video_path)
@@ -230,16 +288,13 @@ def scan_video(video_path, target_data, check_interval_sec=0.5, resize_scale=0.5
                     current_frame_matches.add(best_name)
                     timestamp = current_frame_index / fps
                     
-                    mtime = os.path.getmtime(video_path)
-                    date_str = datetime.datetime.fromtimestamp(mtime).strftime('%Y-%m-%d %H:%M:%S')
-
                     det = {
                         "t": round(float(timestamp), 2),
                         "motion": round(float(motion_score), 2),
                         "face_ratio": round(float(face_ratio), 2),
                         "dist": round(float(best_dist), 4),
                         "face_loc": [int(top*inv_scale), int(right*inv_scale), int(bottom*inv_scale), int(left*inv_scale)],
-                        "timestamp": date_str
+                        "timestamp": "PENDING" # Will be updated after scan
                     }
 
                     # --- 連続検知フィルタ (Temporal Filter) ---
@@ -247,15 +302,26 @@ def scan_video(video_path, target_data, check_interval_sec=0.5, resize_scale=0.5
                     if best_name in last_detections:
                         prev_det, added = last_detections[best_name]
                         
-                        # 記録が確定したタイミングで、重たい解析（DeepFace/Thumb）を一度だけ実行
+                        # 記録が確定したタイミングで、重たい解析（Emotion/Thumb）を一度だけ実行
                         def enrich_detection(d):
                             if "happy" in d: return d # すでに解析済み
                             try:
                                 t_top, t_right, t_bottom, t_left = d["face_loc"]
+                                
+                                # 安全マージン
+                                h, w, _ = frame.shape
+                                t_top = max(0, t_top)
+                                t_left = max(0, t_left)
+                                t_bottom = min(h, t_bottom)
+                                t_right = min(w, t_right)
+                                
                                 face_img = frame[t_top:t_bottom, t_left:t_right]
-                                analysis = DeepFace.analyze(face_img, actions=['emotion'], enforce_detection=False, silent=True)
-                                if isinstance(analysis, list): analysis = analysis[0]
-                                emo = analysis['emotion']
+                                
+                                # Emotion Analysis (ONNX)
+                                emo = {}
+                                if emotion_analyzer:
+                                    analysis = emotion_analyzer.analyze(face_img)
+                                    emo = analysis.get('emotion', {})
                                 
                                 v_score = calculate_visual_score(frame)
                                 desc, vibe = infer_description_vibe(emo, motion=d["motion"], face_ratio=d["face_ratio"], visual_score=v_score)
@@ -266,7 +332,8 @@ def scan_video(video_path, target_data, check_interval_sec=0.5, resize_scale=0.5
                                 d["description"] = desc
                                 d["vibe"] = vibe
                                 d["visual_score"] = v_score
-                            except:
+                            except Exception as e:
+                                print(f"    Analysis Error: {e}")
                                 d["happy"], d["drama"], d["description"], d["vibe"], d["visual_score"] = 0, 0, "人物が映っているシーン", "ナチュラル", 5.0
                             
                             # Generate thumbnail for UI (using user profile dir)
@@ -327,8 +394,6 @@ def run_scan(video_folder, target_pkl='target_faces.pkl', output_json=None, forc
     print(f"動画ファイル {len(video_files)} 本を対象に処理を開始します。")
 
     # --- 既存の結果をロード ---
-    from concurrent.futures import ProcessPoolExecutor, as_completed
-    import multiprocessing
     from utils import load_json_safe
     
     # 既存の結果をロード
@@ -363,60 +428,88 @@ def run_scan(video_folder, target_pkl='target_faces.pkl', output_json=None, forc
     from utils import save_json_atomic
     
     # ProcessPoolExecutor では stop_event (threading.Event) は渡せないので注意
-    # (マルチプロセス用のマネージャが必要になるが、ここではシンプルに1本終わるごとにチェックする)
-    
-    with ProcessPoolExecutor(max_workers=max_workers) as executor:
-        # scan_video は引数が多いため partial や wrapper を使う
-        future_to_video = {
-            executor.submit(scan_video, v_path, target_data): v_path 
-            for v_path in to_scan
-        }
+    # GUI側の停止イベント(threading.Event)をサブプロセス用の停止イベント(multiprocessing.Event)に同期させる
+    manager = multiprocessing.Manager()
+    try:
+        m_stop_event = manager.Event()
         
+        # 進捗管理用
+        futures = {}
         completed_count = 0
-        for future in as_completed(future_to_video):
-            if stop_event and stop_event.is_set():
-                print("\nユーザーによる中断がリクエストされました。")
-                # 残りのタスクはキャンセル（Executor終了時に破棄される）
-                break
-                
-            video_path = future_to_video[future]
-            completed_count += 1
+        
+        with ProcessPoolExecutor(max_workers=max_workers) as executor:
+            # scan_video をサブプロセスで実行開始
+            for v_path in to_scan:
+                f = executor.submit(scan_video, v_path, target_data, stop_event=m_stop_event)
+                futures[f] = v_path
             
-            try:
-                results_per_person = future.result()
+            # ポーリングによる非ブロッキング監視（中断への即時応答のため）
+            while futures:
+                # GUI側で中断が押されたかチェック
+                if stop_event and stop_event.is_set():
+                    if not m_stop_event.is_set():
+                        print("\nユーザーによる中断がリクエストされました。")
+                        m_stop_event.set() # サブプロセスへ停止命令
+                        # まだ開始されていないタスクをキャンセル
+                        for f in futures:
+                            f.cancel()
+                    break
+
+                # 完了したタスクを待機（タイムアウト付きで定期的にループを回す）
+                done, _ = concurrent.futures.wait(
+                    futures.keys(), 
+                    timeout=0.5, 
+                    return_when=concurrent.futures.FIRST_COMPLETED
+                )
                 
-                # --- マージ保存 ---
-                # --- マージ保存 ---
-                final_data = load_json_safe(output_json, lambda: results)
-                mtime = os.path.getmtime(video_path)
-                dt = datetime.datetime.fromtimestamp(mtime)
-                month_str = dt.strftime('%Y-%m')
-                date_str = dt.strftime('%Y-%m-%d %H:%M:%S')
-                final_data["metadata"][video_path] = {"month": month_str, "date": date_str}
-                
-                for name, ts_list in results_per_person.items():
-                    if name not in final_data["people"]:
-                        final_data["people"][name] = {}
-                    if ts_list:
-                        final_data["people"][name][video_path] = ts_list
-                    elif video_path in final_data["people"][name]:
-                        del final_data["people"][name][video_path]
-                
-                save_json_atomic(output_json, final_data)
-                results = final_data
-                
-                # 進捗報告
-                pct = int((completed_count / len(to_scan)) * 100)
-                print(f"進捗: {pct}% ({completed_count}/{len(to_scan)}本完了) - {os.path.basename(video_path)}")
-                sys.stdout.flush()
-                
-            except Exception as e:
-                print(f"  エラー ({os.path.basename(video_path)}): {e}")
+                for future in done:
+                    if future not in futures: continue # 既に処理済みの場合
+                    video_path = futures.pop(future)
+                    completed_count += 1
+                    
+                try:
+                    results_per_person = future.result()
+                    
+                    # 進捗表示（I/Oの前に出すことで即時性を確保）
+                    pct = int((completed_count / len(to_scan)) * 100)
+                    print(f"進捗: {pct}% ({completed_count}/{len(to_scan)}本完了) - {os.path.basename(video_path)}")
+                    sys.stdout.flush()
+
+                    # --- マージ処理 ---
+                    # 毎回ファイル全体をリロードすると非常に遅いため、インメモリの results を直接更新する
+                    mtime = os.path.getmtime(video_path)
+                    dt = datetime.datetime.fromtimestamp(mtime)
+                    month_str = dt.strftime('%Y-%m')
+                    date_str = dt.strftime('%Y-%m-%d %H:%M:%S')
+                    results["metadata"][video_path] = {"month": month_str, "date": date_str}
+                    
+                    for name, ts_list in results_per_person.items():
+                        if name not in results["people"]:
+                            results["people"][name] = {}
+                        if ts_list:
+                            # タイムスタンプの最終確定
+                            for det in ts_list:
+                                if det.get("timestamp") == "PENDING":
+                                    det["timestamp"] = date_str
+                            results["people"][name][video_path] = ts_list
+                        elif video_path in results["people"][name]:
+                            # 検出されなかった場合は削除（再スキャン時など）
+                            del results["people"][name][video_path]
+                    
+                    # 1本ごとに保存（大規模スキャン時のクラッシュ対策）
+                    save_json_atomic(output_json, results)
+
+                except Exception as e:
+                    print(f"  エラー ({os.path.basename(video_path)}): {e}")
+    finally:
+        # マネージャを確実にシャットダウンしてリソースを解放する
+        if 'manager' in locals():
+            manager.shutdown()
 
     print(f"\n処理完了。結果詳細を保存しました: {output_json}")
-    if results:
+    if results and "metadata" in results:
         print("検出された動画:")
-        for path in results.keys():
+        for path in results["metadata"].keys():
             print(f"- {os.path.basename(path)}")
 
 if __name__ == "__main__":

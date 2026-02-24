@@ -2,6 +2,7 @@ import face_recognition_models
 from PyInstaller.utils.hooks import collect_all
 import os
 import sys
+sys.setrecursionlimit(sys.getrecursionlimit() * 10)
 
 # Platform check
 is_mac = sys.platform == 'darwin'
@@ -19,11 +20,12 @@ hiddenimports = [
     'moviepy.video.compositing.CompositeVideoClip',
     'moviepy.audio.AudioClip',
     'decorator',
-    'deepface'
+    'decorator',
+    'onnxruntime'
 ]
 
 # Collect all (datas, binaries, hiddenimports) for tricky packages
-for pkg in ['imageio', 'moviepy', 'customtkinter', 'deepface', 'transformers', 'diffusers', 'requests', 'face_recognition', 'dlib']:
+for pkg in ['imageio', 'moviepy', 'customtkinter', 'requests', 'face_recognition', 'dlib', 'onnxruntime']:
     tmp_ret = collect_all(pkg)
     datas += tmp_ret[0]
     binaries += tmp_ret[1]
@@ -38,16 +40,30 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=['pandas'],
+    excludes=['pandas', 'tensorflow', 'keras', 'deepface', 'transformers', 'diffusers', 'torch', 'h5py', 
+              'libpng', 'libjpeg', 'libtiff', 'libz', 'libwebp', 'lzma', '_lzma'],
     noarchive=False,
-    optimize=0,
 )
 
-# Filter out massive tensorflow binary (libtensorflow_cc) to reduce size (standard on Mac)
-# Python bindings usually use libtensorflow_framework, so this might be safe.
-a.binaries = [x for x in a.binaries if 'libtensorflow_cc' not in x[0]]
+pyz = PYZ(a.pure)
 
 pyz = PYZ(a.pure)
+
+# PATCH: Replace Homebrew's incompatible liblzma with PIL's bundled version
+import os
+pil_lzma = '/Users/ryoga/Library/Python/3.9/lib/python/site-packages/PIL/.dylibs/liblzma.5.dylib'
+if os.path.exists(pil_lzma):
+    print(f"--- Patching liblzma with compatible version from: {pil_lzma} ---")
+    new_binaries = []
+    for name, path, typecode in a.binaries:
+        if 'liblzma' in name:
+            print(f"  Replacing {name} (was {path})")
+            new_binaries.append((name, pil_lzma, typecode))
+        else:
+            new_binaries.append((name, path, typecode))
+    a.binaries = new_binaries
+else:
+    print("--- Warning: Compatible liblzma not found in PIL, using default ---")
 
 exe = EXE(
     pyz,
@@ -83,4 +99,8 @@ if is_mac:
         name='Omokage.app',
         icon='assets/icon.icns',
         bundle_identifier='com.omokage.app',
+        info_plist={
+            'LSMinimumSystemVersion': '12.0',
+            'NSHighResolutionCapable': 'True'
+        }
     )

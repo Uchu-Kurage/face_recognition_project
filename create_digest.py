@@ -8,7 +8,9 @@ import numpy as np
 import face_recognition
 from datetime import datetime
 import random
-from utils import resource_path
+import subprocess
+import imageio_ffmpeg
+from utils import resource_path, load_config
 
 def load_scan_results(json_path='scan_results.json'):
     if not os.path.exists(json_path):
@@ -18,6 +20,34 @@ def load_scan_results(json_path='scan_results.json'):
     with open(json_path, 'r', encoding='utf-8') as f:
         data = json.load(f)
     return data
+
+def get_video_rotation(path):
+    """ffprobeを使用して動画の回転メタデータを取得する。"""
+    try:
+        ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+        ffprobe_exe = ffmpeg_exe.replace("ffmpeg", "ffprobe")
+        if not os.path.exists(ffprobe_exe):
+            for p in ["ffprobe", "/usr/local/bin/ffprobe", "/opt/homebrew/bin/ffprobe"]:
+                try:
+                    subprocess.run([p, "-version"], capture_output=True, check=True)
+                    ffprobe_exe = p
+                    break
+                except: continue
+        cmd = [ffprobe_exe, "-v", "error", "-select_streams", "v:0", "-show_entries", "stream_side_data=rotation", "-of", "json", path]
+        startupinfo = None
+        if os.name == 'nt':
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        result = subprocess.run(cmd, capture_output=True, text=True, startupinfo=startupinfo)
+        if result.returncode == 0:
+            data = json.loads(result.stdout)
+            streams = data.get("streams", [])
+            if streams and "side_data_list" in streams[0]:
+                for sd in streams[0]["side_data_list"]:
+                    if "rotation" in sd: return int(sd["rotation"])
+    except: pass
+    return 0
+
 
 
 from utils import load_config
@@ -29,11 +59,21 @@ def apply_blur(frame, target_encodings, blur_enabled):
     # MoviePy frames are often read-only. Create a copy to modify.
     processed_frame = frame.copy()
     
-    # face_recognition expects RGB, which MoviePy already provides.
-    face_locations = face_recognition.face_locations(processed_frame)
-    if not face_locations:
-        return processed_frame
+    # 【追加】顔検出用に画像を1/4に縮小（爆速化の要！）
+    small_frame = cv2.resize(processed_frame, (0, 0), fx=0.25, fy=0.25)
     
+    # 縮小した画像で顔の場所を探す
+    small_face_locations = face_recognition.face_locations(small_frame)
+    if not small_face_locations:
+        return processed_frame
+        
+    # 見つけた顔の座標を4倍にして、元のサイズに戻す
+    face_locations = [
+        (int(top*4), int(right*4), int(bottom*4), int(left*4)) 
+        for (top, right, bottom, left) in small_face_locations
+    ]
+    
+    # エンコーディング（顔の照合）は元の画質で行う
     face_encodings = face_recognition.face_encodings(processed_frame, face_locations)
     known_encodings = list(target_encodings.values())
     
@@ -152,27 +192,99 @@ def create_digest(scan_results_path, target_person_name=None, config_path='confi
                     end = min(duration, best_t + 1.5)
                     
                     print(f"  抽出中: {os.path.basename(video_path)} @ {best_t}s (Focus: {focus}, Score: {score_func(best_detection):.2f})")
+                    print(f"    [DEBUG] Full Path: {video_path}")
+                    
+                    # メタデータの詳細ログ出力 (1行に集約)
+                    try:
+                        meta_cmd = [
+                            "ffprobe", "-v", "error", "-select_streams", "v:0",
+                            "-show_entries", "stream=width,height,display_aspect_ratio,pix_fmt:stream_tags:stream_side_data",
+                            "-of", "json", video_path
+                        ]
+                        meta_json = json.loads(subprocess.check_output(meta_cmd).decode('utf-8'))
+                        meta_flat = json.dumps(meta_json, separators=(',', ':'))
+                        print(f"    [DEBUG] Video Metadata: {meta_flat}")
+                    except Exception as me:
+                        print(f"    [DEBUG] Could not fetch metadata: {me}")
+
                     clip = video.subclip(start, end)
                     
-                    # --- 究極の解像度正規化 (1280x720 キャンバス固定) ---
-                    # 1. 回転を「無効」にし、MoviePyが読み取った生のピクセルサイズを維持する
-                    # (縦長・横長にかかわらず、読み取った w, h をそのまま使う)
-                    orig_w, orig_h = clip.size
+                    # --- Robust Normalization (1280x720 Fixed Canvas) ---
                     target_w, target_h = 1280, 720
                     
-                    # 2. 比率を「絶対に」維持して 1280x720 に収まる倍率を計算
-                    scale = min(target_w / orig_w, target_h / orig_h)
+                    # メタデータから本来の向きを判定
+                    rotation = get_video_rotation(video_path)
+                    orig_w_pre, orig_h_pre = clip.size # MoviePyが誤認識している枠のサイズ
                     
-                    # 3. リサイズ実行 (倍率指定リサイズはアス比が崩れない)
-                    clip = clip.resize(scale)
-                    new_w, new_h = clip.size
-                    print(f"    [DEBUG] Normalizing: {orig_w}x{orig_h} -> {new_w}x{new_h} (Scale: {scale:.3f})")
+                    # 横長枠なのに回転メタデータ(-90等)がある場合のみ True になる
+                    needs_unsquash = (orig_w_pre > orig_h_pre) and (rotation in [-90, 90, 270, -270])
+                    
+                    if needs_unsquash:
+                        # 【異常な動画用】MoviePyに潰された映像をOpenCVで解毒して強制復元
+                        print(f"    [UNSQUASH] Detecting squashed frame {orig_w_pre}x{orig_h_pre}. Applying OpenCV Unsquash...")
+                        
+                        def format_canvas(frame):
+                            # 潰された映像を本来の縦長に引き伸ばす
+                            frame = cv2.resize(frame, (orig_h_pre, orig_w_pre))
+                            
+                            h, w = frame.shape[:2]
+                            is_vertical = h > w
+                            ratio_diff = abs((w / h) - (target_w / target_h))
+                            use_bokeh = is_vertical or ratio_diff > 0.1
 
-                    # 4. 1280x720の黒背景の中央に配置 (CompositeVideoClipでガチガチに固める)
-                    from moviepy.editor import ColorClip
-                    bg_clip = ColorClip(size=(target_w, target_h), color=(0,0,0)).set_duration(clip.duration)
-                    clip = CompositeVideoClip([bg_clip, clip.set_position("center")])
-                    
+                            # 前景（メイン動画）のリサイズ
+                            scale_fg = min(target_w / w, target_h / h)
+                            new_w, new_h = int(w * scale_fg), int(h * scale_fg)
+                            fg_resized = cv2.resize(frame, (new_w, new_h))
+                            
+                            x_offset = (target_w - new_w) // 2
+                            y_offset = (target_h - new_h) // 2
+                            
+                            if use_bokeh:
+                                # 背景（ボカシ）の生成
+                                scale_bg = max(target_w / w, target_h / h)
+                                new_w_bg = max(target_w, int(w * scale_bg))
+                                new_h_bg = max(target_h, int(h * scale_bg))
+                                bg_resized = cv2.resize(frame, (new_w_bg, new_h_bg))
+                                
+                                x_crop = (new_w_bg - target_w) // 2
+                                y_crop = (new_h_bg - target_h) // 2
+                                bg_cropped = bg_resized[y_crop:y_crop+target_h, x_crop:x_crop+target_w]
+                                
+                                canvas = cv2.GaussianBlur(bg_cropped, (51, 51), 0)
+                            else:
+                                canvas = np.zeros((target_h, target_w, 3), dtype=np.uint8)
+                            
+                            canvas[y_offset:y_offset+new_h, x_offset:x_offset+new_w] = fg_resized
+                            return canvas
+
+                        clip = clip.fl_image(format_canvas)
+                        clip.size = (target_w, target_h)
+                        
+                    else:
+                        # 【正常な動画用】安定しているMoviePyネイティブ処理
+                        print(f"    [NORMAL] Processing standard video {orig_w_pre}x{orig_h_pre}")
+                        
+                        orig_w, orig_h = clip.size
+                        is_vertical = orig_h > orig_w
+                        ratio_diff = abs((orig_w / orig_h) - (target_w / target_h))
+                        
+                        if is_vertical or ratio_diff > 0.1:
+                            bg_scale = max(target_w / orig_w, target_h / orig_h)
+                            bg_clip = clip.resize(bg_scale)
+                            bg_clip = bg_clip.fl_image(lambda f: cv2.GaussianBlur(f, (51, 51), 0))
+                            # 中央でクロップ
+                            bg_clip = bg_clip.crop(width=target_w, height=target_h, x_center=bg_clip.size[0]/2, y_center=bg_clip.size[1]/2)
+                            
+                            fg_scale = min(target_w / orig_w, target_h / orig_h)
+                            fg_clip = clip.resize(fg_scale) 
+                            clip = CompositeVideoClip([bg_clip, fg_clip.set_position("center")], size=(target_w, target_h))
+                        else:
+                            scale = min(target_w / orig_w, target_h / orig_h)
+                            scaled_clip = clip.resize(scale)
+                            bg_clip = ColorClip(size=(target_w, target_h), color=(0,0,0)).set_duration(scaled_clip.duration)
+                            clip = CompositeVideoClip([bg_clip, scaled_clip.set_position("center")], size=(target_w, target_h))
+
                     # 5. テクニカル同期
                     clip = clip.set_fps(24)
                     
@@ -217,7 +329,8 @@ def create_digest(scan_results_path, target_person_name=None, config_path='confi
             print(f"  {len(final_clips)} 個のクリップを結合中: {output_path}")
             
             try:
-                final_video = concatenate_videoclips(final_clips, method="compose")
+                # すべて1280x720に正規化済みのため、重い compose ではなくデフォルト(chaining)で安定化
+                final_video = concatenate_videoclips(final_clips)
                 # moviepy 1.0.3 write_videofile has progress bar to stderr, but we can emit our own
                 final_video.write_videofile(output_path, codec='libx264', audio_codec='aac', 
                                             fps=24, audio_fps=44100, threads=4,

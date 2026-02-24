@@ -8,8 +8,58 @@ from datetime import datetime
 import cv2
 import numpy as np
 import face_recognition
+import subprocess
+import imageio_ffmpeg
 from moviepy.editor import VideoFileClip, concatenate_videoclips, ColorClip, CompositeVideoClip, AudioFileClip, CompositeAudioClip, ImageClip
 from utils import resource_path, load_config, get_user_data_dir
+
+
+def get_video_rotation(path):
+    """ffprobeを使用して動画の回転メタデータを取得する。
+    """
+    try:
+        # 1. Try finding ffprobe via imageio_ffmpeg (common fallback)
+        import imageio_ffmpeg
+        ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+        
+        # Determine ffprobe path based on ffmpeg location
+        ffprobe_exe = ffmpeg_exe.replace("ffmpeg", "ffprobe")
+        
+        # If the direct replace doesn't exist, try common system paths
+        if not os.path.exists(ffprobe_exe):
+            for p in ["ffprobe", "/usr/local/bin/ffprobe", "/opt/homebrew/bin/ffprobe"]:
+                try:
+                    subprocess.run([p, "-version"], capture_output=True, check=True)
+                    ffprobe_exe = p
+                    break
+                except: continue
+        
+        cmd = [
+            ffprobe_exe, "-v", "error",
+            "-select_streams", "v:0",
+            "-show_entries", "stream_side_data=rotation",
+            "-of", "json", path
+        ]
+        
+        startupinfo = None
+        if os.name == 'nt':
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            
+        result = subprocess.run(cmd, capture_output=True, text=True, startupinfo=startupinfo)
+        if result.returncode == 0:
+            data = json.loads(result.stdout)
+            streams = data.get("streams", [])
+            if streams and "side_data_list" in streams[0]:
+                for sd in streams[0]["side_data_list"]:
+                    if "rotation" in sd:
+                        return int(sd["rotation"])
+    except Exception as e:
+        print(f"    [DEBUG] Rotation detection fallback triggered: {e}")
+        # Final fallback: if everything fails, assume no rotation needed
+    return 0
+
+
 
 
 
@@ -17,11 +67,25 @@ def apply_blur(frame, target_encodings, blur_enabled):
     if not blur_enabled:
         return frame
     processed_frame = frame.copy()
-    face_locations = face_recognition.face_locations(processed_frame)
-    if not face_locations:
+    
+    # 【追加】顔検出用に画像を1/4に縮小（爆速化の要！）
+    small_frame = cv2.resize(processed_frame, (0, 0), fx=0.25, fy=0.25)
+    
+    # 縮小した画像で顔の場所を探す
+    small_face_locations = face_recognition.face_locations(small_frame)
+    if not small_face_locations:
         return processed_frame
+        
+    # 見つけた顔の座標を4倍にして、元のサイズに戻す
+    face_locations = [
+        (int(top*4), int(right*4), int(bottom*4), int(left*4)) 
+        for (top, right, bottom, left) in small_face_locations
+    ]
+    
+    # エンコーディング（顔の照合）は元の画質で行う
     face_encodings = face_recognition.face_encodings(processed_frame, face_locations)
     known_encodings = list(target_encodings.values())
+    
     for (top, right, bottom, left), face_enc in zip(face_locations, face_encodings):
         matches = face_recognition.compare_faces(known_encodings, face_enc, tolerance=0.5)
         if not any(matches):
@@ -97,23 +161,6 @@ def add_title_overlay(frame, title_text):
     img = cv2.addWeighted(overlay, 0.4, img, 0.6, 0)
     cv2.putText(img, title_text, (text_x, text_y), font, scale, (255, 255, 255), thickness, cv2.LINE_AA)
     return cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-
-def add_date_overlay(frame, date_str):
-    from PIL import Image, ImageDraw, ImageFont
-    img_pil = Image.fromarray(frame)
-    draw = ImageDraw.Draw(img_pil)
-    try:
-        font = ImageFont.truetype("/System/Library/Fonts/Avenir Next.ttc", 40)
-    except:
-        try:
-            font = ImageFont.truetype("/System/Library/Fonts/Avenir Next Condensed.ttc", 40)
-        except:
-            font = ImageFont.load_default()
-    pos = (50, 630)
-    offset = 2
-    draw.text((pos[0]+offset, pos[1]+offset), date_str, font=font, fill=(0,0,0))
-    draw.text(pos, date_str, font=font, fill=(255,255,255))
-    return np.array(img_pil)
 
 def create_title_card(title_text, subtitle_text="", duration=3.0, font_size=80):
     from PIL import Image, ImageDraw, ImageFont
@@ -195,44 +242,124 @@ def render_documentary(playlist_path='story_playlist.json', config_path='config.
     output_path = os.path.join(output_dir, f"documentary_{timestamp_str}{f_tag}.mp4")
 
     final_clips = []
-    print(f"\n>>>> ドキュメンタリーをレンダリング中 (20 clips, 60s) <<<<")
+    print(f"\n>>>> ドキュメンタリーをレンダリング中 ({len(playlist)} clips) <<<<")
 
     for i, item in enumerate(playlist):
         video_path = item["video_path"]
-        best_t = item["t"]
-        
+        # NFC/NFD normalization check
         if not os.path.exists(video_path):
-            print(f"  Warning: Video missing: {video_path}")
+            import unicodedata
+            video_path = unicodedata.normalize('NFC', item["video_path"])
+            if not os.path.exists(video_path):
+                video_path = unicodedata.normalize('NFD', item["video_path"])
+            
+        if not os.path.exists(video_path):
+            print(f"  [ERROR] File not found: {item['video_path']}")
             continue
-
+            
         try:
             video = VideoFileClip(video_path)
             duration = video.duration
+            best_t = item["t"]
             start = max(0, best_t - 1.5)
             end = min(duration, best_t + 1.5)
             
             print(f"  [{i+1}/{len(playlist)}] Processing: {os.path.basename(video_path)} @ {best_t}s")
+            print(f"    [DEBUG] Full Path: {video_path}")
+            
+            # メタデータの詳細ログ出力 (1行に集約)
+            try:
+                meta_cmd = [
+                    "ffprobe", "-v", "error", "-select_streams", "v:0",
+                    "-show_entries", "stream=width,height,display_aspect_ratio,pix_fmt:stream_tags:stream_side_data",
+                    "-of", "json", video_path
+                ]
+                meta_json = json.loads(subprocess.check_output(meta_cmd).decode('utf-8'))
+                # 冗長なパス情報などを除き、コンパクトに1行で出力
+                meta_flat = json.dumps(meta_json, separators=(',', ':'))
+                print(f"    [DEBUG] Video Metadata: {meta_flat}")
+            except Exception as me:
+                print(f"    [DEBUG] Could not fetch metadata: {me}")
+
             # --- Load and Subclip ---
             raw_clip = video.subclip(start, end)
             
             # --- Robust Normalization (1280x720 Fixed Canvas) ---
-            # 1. 回転を「無効」にし、MoviePyが読み取った生のピクセルサイズを維持する
-            orig_w, orig_h = raw_clip.size
             target_w, target_h = 1280, 720
             
-            # 2. 比率を絶対に維持して 1280x720 に収める倍率を計算
-            scale = min(target_w / orig_w, target_h / orig_h)
+            # メタデータから本来の向きを判定
+            rotation = get_video_rotation(video_path)
+            orig_w_pre, orig_h_pre = raw_clip.size # MoviePyが誤認識している枠のサイズ
             
-            # 3. リサイズ実行 (倍率指定リサイズはアス比が崩れない)
-            scaled_clip = raw_clip.resize(scale)
-            nw, nh = scaled_clip.size
-            print(f"    [DEBUG] Normalizing: {orig_w}x{orig_h} -> {nw}x{nh} (Scale: {scale:.3f})")
+            # 横長枠なのに回転メタデータ(-90等)がある場合のみ True になる
+            needs_unsquash = (orig_w_pre > orig_h_pre) and (rotation in [-90, 90, 270, -270])
+            
+            if needs_unsquash:
+                # 【異常な動画用】MoviePyに潰された映像をOpenCVで解毒して強制復元
+                print(f"    [UNSQUASH] Detecting squashed frame {orig_w_pre}x{orig_h_pre}. Applying OpenCV Unsquash...")
+                
+                def format_canvas(frame):
+                    # 潰された映像を本来の縦長に引き伸ばす
+                    frame = cv2.resize(frame, (orig_h_pre, orig_w_pre))
+                    
+                    h, w = frame.shape[:2]
+                    is_vertical = h > w
+                    ratio_diff = abs((w / h) - (target_w / target_h))
+                    use_bokeh = is_vertical or ratio_diff > 0.1
 
-            # 4. 1280x720の黒背景の中央に配置 (CompositeVideoClipでガチガチに固める)
-            from moviepy.editor import ColorClip
-            bg_clip = ColorClip(size=(target_w, target_h), color=(0,0,0)).set_duration(scaled_clip.duration)
-            clip = CompositeVideoClip([bg_clip, scaled_clip.set_position("center")])
-            
+                    # 前景（メイン動画）のリサイズ
+                    scale_fg = min(target_w / w, target_h / h)
+                    new_w, new_h = int(w * scale_fg), int(h * scale_fg)
+                    fg_resized = cv2.resize(frame, (new_w, new_h))
+                    
+                    x_offset = (target_w - new_w) // 2
+                    y_offset = (target_h - new_h) // 2
+                    
+                    if use_bokeh:
+                        # 背景（ボカシ）の生成
+                        scale_bg = max(target_w / w, target_h / h)
+                        new_w_bg = max(target_w, int(w * scale_bg))
+                        new_h_bg = max(target_h, int(h * scale_bg))
+                        bg_resized = cv2.resize(frame, (new_w_bg, new_h_bg))
+                        
+                        x_crop = (new_w_bg - target_w) // 2
+                        y_crop = (new_h_bg - target_h) // 2
+                        bg_cropped = bg_resized[y_crop:y_crop+target_h, x_crop:x_crop+target_w]
+                        
+                        canvas = cv2.GaussianBlur(bg_cropped, (51, 51), 0)
+                    else:
+                        canvas = np.zeros((target_h, target_w, 3), dtype=np.uint8)
+                    
+                    canvas[y_offset:y_offset+new_h, x_offset:x_offset+new_w] = fg_resized
+                    return canvas
+
+                clip = raw_clip.fl_image(format_canvas)
+                clip.size = (target_w, target_h)
+                
+            else:
+                # 【正常な動画用】以前安定稼働していたMoviePyネイティブの処理
+                print(f"    [NORMAL] Processing standard video {orig_w_pre}x{orig_h_pre}")
+                
+                orig_w, orig_h = raw_clip.size
+                is_vertical = orig_h > orig_w
+                ratio_diff = abs((orig_w / orig_h) - (target_w / target_h))
+                
+                if is_vertical or ratio_diff > 0.1:
+                    bg_scale = max(target_w / orig_w, target_h / orig_h)
+                    bg_clip = raw_clip.resize(bg_scale)
+                    bg_clip = bg_clip.fl_image(lambda f: cv2.GaussianBlur(f, (51, 51), 0))
+                    # 中央でクロップ
+                    bg_clip = bg_clip.crop(width=target_w, height=target_h, x_center=bg_clip.size[0]/2, y_center=bg_clip.size[1]/2)
+                    
+                    fg_scale = min(target_w / orig_w, target_h / orig_h)
+                    fg_clip = raw_clip.resize(fg_scale) 
+                    clip = CompositeVideoClip([bg_clip, fg_clip.set_position("center")], size=(target_w, target_h))
+                else:
+                    scale = min(target_w / orig_w, target_h / orig_h)
+                    scaled_clip = raw_clip.resize(scale)
+                    bg_clip = ColorClip(size=(target_w, target_h), color=(0,0,0)).set_duration(scaled_clip.duration)
+                    clip = CompositeVideoClip([bg_clip, scaled_clip.set_position("center")], size=(target_w, target_h))
+
             # 5. テクニカル同期
             clip = clip.set_fps(24)
             if clip.audio is not None:
@@ -255,7 +382,7 @@ def render_documentary(playlist_path='story_playlist.json', config_path='config.
                 clip = clip.fl_image(lambda f, d=ds: add_date_overlay(f, d))
 
             final_clips.append(clip)
-                
+            
         except Exception as e:
             print(f"  Error processing {video_path}: {e}")
         
@@ -316,9 +443,14 @@ def render_documentary(playlist_path='story_playlist.json', config_path='config.
     # 結合: OP + Main + ED
     final_clips = [op_clip] + final_clips + [ed_clip]
 
+    if not final_clips:
+        print("Error: No clips were successfully processed.")
+        return
+
     print(f"\nConcatenating {len(final_clips)} clips...")
     try:
-        final_video = concatenate_videoclips(final_clips, method="compose")
+        # すべて同サイズに正規化済みなので、最速のデフォルトメソッド(chain)を使用
+        final_video = concatenate_videoclips(final_clips)
         
         # BGMミキシング
         if bgm_enabled:
@@ -383,7 +515,6 @@ def render_documentary(playlist_path='story_playlist.json', config_path='config.
                     # Temporary workaround for non-ASCII filenames/metadata issues in MoviePy
                     import shutil
                     import tempfile
-                    import subprocess
                     
                     # Create a temp file for the clean audio
                     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
@@ -482,6 +613,9 @@ def render_documentary(playlist_path='story_playlist.json', config_path='config.
                     
                     final_video = final_video.set_audio(mixed_audio)
                     print(f"  BGMミキシング完了")
+                    
+                    # Close bgm_audio after setting it to final_video (final_video keeps a copy or reference)
+                    # we close them in final finally
                 except Exception as e:
                     print(f"  BGMミキシングエラー: {e}")
                     print(f"  BGMなしで続行します...")
@@ -490,20 +624,32 @@ def render_documentary(playlist_path='story_playlist.json', config_path='config.
         temp_audio_path = os.path.join(os.path.dirname(output_path), "temp_audio_mpy.m4a")
         
         # --- Absolute Stability: pix_fmt yuv420p, audio_fps, threads ---
+        print(f"\n>>> RENDERING FILE: {output_path}")
+        print(f"    (Preset: ultrafast, Threads: 4, FPS: 24)")
+        
         final_video.write_videofile(output_path, codec='libx264', audio_codec='aac', 
                                     fps=24, audio_fps=44100, threads=4,
                                     preset='ultrafast',
                                     temp_audiofile=temp_audio_path, remove_temp=True,
                                     ffmpeg_params=["-pix_fmt", "yuv420p"])
-        print(f"\n>>> DOCUMENTARY GENERATED: {output_path}")
+        print(f"\n>>> DOCUMENTARY GENERATED SUCCESSFULLY: {output_path}")
     except Exception as e:
         print(f"Error during concatenation: {e}")
     finally:
         print("\nCleaning up resources...")
-        if 'final_video' in locals(): 
+        if 'final_video' in locals() and final_video: 
             try: final_video.close()
             except: pass
         
+        # BGM一時ファイルの削除をここ（最後に）移動
+        if 'temp_bgm_path' in locals() and temp_bgm_path and os.path.exists(temp_bgm_path):
+            try:
+                if 'bgm_audio' in locals() and bgm_audio:
+                    bgm_audio.close()
+                os.remove(temp_bgm_path)
+                print(f"  BGM一時ファイルを最終削除しました: {temp_bgm_path}")
+            except: pass
+
         # すべてのサブクリップを明示的に閉じる
         if 'final_clips' in locals():
             for c in final_clips:

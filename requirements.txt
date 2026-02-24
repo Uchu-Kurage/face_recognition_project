@@ -1,20 +1,12 @@
-customtkinter
-decorator
-deepface
-dlib
-face-recognition-models
-face_recognition
-gdown
-huggingface-hub
 moviepy==1.0.3
-opencv-python
+numpy<2.0.0
+onnxruntime
+opencv-python-headless<4.10
 packaging
 
 pillow
 psutil
 pygame
-pyinstaller
+pyinstaller==5.13.2
 requests
-safetensors
-tf-keras
 tqdm
