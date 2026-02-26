@@ -625,8 +625,10 @@ def render_documentary(playlist_path='story_playlist.json', config_path='config.
                     print(f"  BGMミキシングエラー: {e}")
                     print(f"  BGMなしで続行します...")
         
-        # Generate a safe temp audio path in the output directory
-        temp_audio_path = os.path.join(os.path.dirname(output_path), "temp_audio_mpy.m4a")
+        # Generate a safe temp audio path in the system temp directory
+        # to avoid Broken Pipe error when output_path contains multi-byte characters.
+        import tempfile
+        temp_audio_path = os.path.join(tempfile.gettempdir(), f"temp_audio_mpy_{timestamp_str}.m4a")
         
         # --- Absolute Stability: pix_fmt yuv420p, audio_fps, threads ---
         print(f"\n>>> RENDERING FILE: {output_path}")

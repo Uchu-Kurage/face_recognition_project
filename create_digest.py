@@ -331,9 +331,15 @@ def create_digest(scan_results_path, target_person_name=None, config_path='confi
             try:
                 # すべて1280x720に正規化済みのため、重い compose ではなくデフォルト(chaining)で安定化
                 final_video = concatenate_videoclips(final_clips)
+                
+                # 日本語パス等での Broken pipe 回避のため一時ファイルを安全な場所に作成
+                import tempfile
+                temp_audio_path = os.path.join(tempfile.gettempdir(), f"mpy_temp_audio_{person_name}_{month_str}.m4a")
+                
                 # moviepy 1.0.3 write_videofile has progress bar to stderr, but we can emit our own
                 final_video.write_videofile(output_path, codec='libx264', audio_codec='aac', 
                                             fps=24, audio_fps=44100, threads=4,
+                                            temp_audiofile=temp_audio_path, remove_temp=True,
                                             ffmpeg_params=["-pix_fmt", "yuv420p"])
             except Exception as e:
                 print(f"  エラー: {e}")
