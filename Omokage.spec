@@ -49,9 +49,11 @@ pyz = PYZ(a.pure)
 
 pyz = PYZ(a.pure)
 
-# PATCH: Replace Homebrew's incompatible liblzma with PIL's bundled version
-import os
-pil_lzma = '/Users/ryoga/Library/Python/3.9/lib/python/site-packages/PIL/.dylibs/liblzma.5.dylib'
+# PATCH: Replace system's incompatible liblzma with PIL's bundled version if available
+import PIL
+pil_path = os.path.dirname(PIL.__file__)
+pil_lzma = os.path.join(pil_path, '.dylibs', 'liblzma.5.dylib')
+
 if os.path.exists(pil_lzma):
     print(f"--- Patching liblzma with compatible version from: {pil_lzma} ---")
     new_binaries = []
@@ -63,7 +65,7 @@ if os.path.exists(pil_lzma):
             new_binaries.append((name, path, typecode))
     a.binaries = new_binaries
 else:
-    print("--- Warning: Compatible liblzma not found in PIL, using default ---")
+    print(f"--- Info: PIL-bundled liblzma not found at {pil_lzma}, using default ---")
 
 exe = EXE(
     pyz,
