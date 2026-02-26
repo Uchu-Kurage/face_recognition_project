@@ -293,10 +293,6 @@ def create_digest(scan_results_path, target_person_name=None, config_path='confi
                         clip.audio = clip.audio.set_fps(44100)
                     clip = clip.set_duration(3.0)
 
-                    # 顔ぼかし適用
-                    if blur_enabled:
-                        clip = clip.fl_image(lambda f: apply_blur(f, target_encodings, blur_enabled))
-
                     # 日付テロップ適用 (メタデータから取得)
                     date_str = ""
                     meta = results.get("metadata", {}).get(video_path, {})
@@ -389,13 +385,8 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--json", default="scan_results.json")
     parser.add_argument("--person", default=None)
-    parser.add_argument("--blur", action="store_true")
-    parser.add_argument("--no-blur", action="store_false", dest="blur")
     parser.add_argument("--period", default="All Time")
     parser.add_argument("--focus", default="Balance")
     args = parser.parse_args()
-
-    # コマンドライン引数を優先
-    os.environ["DIGEST_BLUR"] = "1" if args.blur else "0"
 
     create_digest(args.json, target_person_name=args.person, period=args.period, focus=args.focus)

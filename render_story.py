@@ -63,40 +63,6 @@ def get_video_rotation(path):
 
 
 
-def apply_blur(frame, target_encodings, blur_enabled):
-    if not blur_enabled:
-        return frame
-    processed_frame = frame.copy()
-    
-    # 【追加】顔検出用に画像を1/4に縮小（爆速化の要！）
-    small_frame = cv2.resize(processed_frame, (0, 0), fx=0.25, fy=0.25)
-    
-    # 縮小した画像で顔の場所を探す
-    small_face_locations = face_recognition.face_locations(small_frame)
-    if not small_face_locations:
-        return processed_frame
-        
-    # 見つけた顔の座標を4倍にして、元のサイズに戻す
-    face_locations = [
-        (int(top*4), int(right*4), int(bottom*4), int(left*4)) 
-        for (top, right, bottom, left) in small_face_locations
-    ]
-    
-    # エンコーディング（顔の照合）は元の画質で行う
-    face_encodings = face_recognition.face_encodings(processed_frame, face_locations)
-    known_encodings = list(target_encodings.values())
-    
-    for (top, right, bottom, left), face_enc in zip(face_locations, face_encodings):
-        matches = face_recognition.compare_faces(known_encodings, face_enc, tolerance=0.5)
-        if not any(matches):
-            face_region = processed_frame[top:bottom, left:right]
-            if face_region.size == 0: continue
-            kh = (bottom - top) // 4 * 2 + 1
-            kw = (right - left) // 4 * 2 + 1
-            ksize = (max(1, kw), max(1, kh))
-            blurred_face = cv2.GaussianBlur(face_region, ksize, 30)
-            processed_frame[top:bottom, left:right] = blurred_face
-    return processed_frame
 
 def add_date_overlay(frame, date_str):
     from PIL import Image, ImageDraw, ImageFont
@@ -188,7 +154,7 @@ def create_title_card(title_text, subtitle_text="", duration=3.0, font_size=80):
         draw_centered(subtitle_text, font_sub, y_offset=60)
     return ImageClip(np.array(img_pil)).set_duration(duration).set_fps(24)
 
-def render_documentary(playlist_path='story_playlist.json', config_path='config.json', output_dir='output', blur_enabled=None, filter_type=None, bgm_enabled=None, focus=None):
+def render_documentary(playlist_path='story_playlist.json', config_path='config.json', output_dir='output', filter_type=None, bgm_enabled=None, focus=None):
     if not os.path.exists(playlist_path):
         print(f"Error: Playlist not found: {playlist_path}")
         return
@@ -206,8 +172,6 @@ def render_documentary(playlist_path='story_playlist.json', config_path='config.
 
     config = load_config(config_path)
     # 引数、環境変数、Configの順で優先
-    if blur_enabled is None:
-        blur_enabled = str(os.environ.get("RENDER_BLUR", config.get("blur_enabled", False))).lower() in ("1", "true", "yes")
         
     if bgm_enabled is None:
         bgm_enabled = str(os.environ.get("RENDER_BGM", "0")).lower() in ("1", "true", "yes")
@@ -225,16 +189,6 @@ def render_documentary(playlist_path='story_playlist.json', config_path='config.
             print(f"  Vibe ({dominant_vibe}) に基づきフィルター '{auto_filter}' を自動適用します")
             filter_type = auto_filter
 
-    target_pkl = resource_path('target_faces.pkl')
-    target_encodings = {}
-    if blur_enabled:
-        if os.path.exists(target_pkl):
-            with open(target_pkl, 'rb') as f:
-                target_encodings = pickle.load(f)
-        else:
-            if os.path.exists('target_faces.pkl'):
-                with open('target_faces.pkl', 'rb') as f:
-                    target_encodings = pickle.load(f)
 
     os.makedirs(output_dir, exist_ok=True)
     timestamp_str = datetime.now().strftime('%Y%m%d_%H%M%S')
@@ -367,9 +321,6 @@ def render_documentary(playlist_path='story_playlist.json', config_path='config.
             clip = clip.set_duration(3.0)
             
             # --- 5. Visual Overlays ---
-            # Apply blur
-            if blur_enabled:
-                clip = clip.fl_image(lambda f: apply_blur(f, target_encodings, blur_enabled))
             
             # Apply color filter
             if filter_type and filter_type != "None":
@@ -669,14 +620,11 @@ def render_documentary(playlist_path='story_playlist.json', config_path='config.
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument("--blur", action="store_true")
-    parser.add_argument("--no-blur", action="store_false", dest="blur")
     parser.add_argument("--bgm", action="store_true")
     parser.add_argument("--no-bgm", action="store_false", dest="bgm")
     args = parser.parse_args()
 
     # 環境変数にセットして render_documentary 内で参照
-    os.environ["RENDER_BLUR"] = "1" if args.blur else "0"
     os.environ["RENDER_BGM"] = "1" if args.bgm else "0"
 
     render_documentary()

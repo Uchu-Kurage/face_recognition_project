@@ -125,10 +125,9 @@ class ModernDigestApp(ctk.CTk):
         self.scan_stop_event = threading.Event()
         
         # 編集設定
-        self.blur_enabled = ctk.BooleanVar(value=self.config.get("blur_enabled", False))
         self.color_filter = ctk.StringVar(value=self.config.get("color_filter", "None"))
         self.selected_period = ctk.StringVar(value="All Time")
-        self.force_rescan = ctk.BooleanVar(value=False) # Added this line
+        self.force_rescan = ctk.BooleanVar(value=False)
         self.selected_focus = ctk.StringVar(value="バランス")
         self.bgm_enabled = ctk.BooleanVar(value=self.config.get("bgm_enabled", False))
         self.hf_token = ctk.StringVar(value=self.config.get("hf_token", ""))
@@ -532,9 +531,6 @@ class ModernDigestApp(ctk.CTk):
         self.set_section.grid(row=0, column=0, sticky="nsew", padx=5, pady=10)
         ctk.CTkLabel(self.set_section, text="2. 編集設定", text_color=self.COLOR_ACCENT, font=ctk.CTkFont(size=14, weight="bold")).pack(pady=(12, 5))
         
-        self.sw_blur = ctk.CTkSwitch(self.set_section, text="顔ぼかし (対象以外)", variable=self.blur_enabled, 
-                                     progress_color=self.COLOR_ACCENT, command=self.save_config)
-        self.sw_blur.pack(pady=5)
         
 
         ctk.CTkLabel(self.set_section, text="期間:", font=ctk.CTkFont(size=11)).pack(anchor="w", padx=20)
@@ -714,7 +710,6 @@ class ModernDigestApp(ctk.CTk):
         config = {
             "target_path": self.target_image_path.get(),
             "video_folder": self.video_folder_path.get(),
-            "blur_enabled": self.blur_enabled.get(),
             "color_filter": self.color_filter.get(),
             "bgm_enabled": self.bgm_enabled.get(),
             "hf_token": self.hf_token.get().strip()
@@ -1107,19 +1102,11 @@ class ModernDigestApp(ctk.CTk):
         
         def run():
             try:
-                blur_flag = "--blur" if self.blur_enabled.get() else "--no-blur"
-                # Direct call instead of subprocess
-                current_stdout = sys.stdout
-                current_stderr = sys.stderr
-                sys.stdout = RedirectText(lambda s: self.log(s, end=""))
-                sys.stderr = RedirectText(lambda s: self.log(s, end=""))
-                
                 try:
                     create_digest.create_digest(
                         self.SCAN_RESULTS_FILE, 
                         target_person_name=person,
                         base_output_dir=self.OUTPUT_DIR,
-                        blur_enabled=self.blur_enabled.get(),
                         period=self.selected_period.get(),
                         focus=self.selected_focus.get()
                     )
@@ -1183,7 +1170,6 @@ class ModernDigestApp(ctk.CTk):
                     render_story.render_documentary(
                         playlist_path=self.PLAYLIST_FILE,
                         output_dir=self.OUTPUT_DIR,
-                        blur_enabled=self.blur_enabled.get(),
                         filter_type=self.color_filter.get(),
                         bgm_enabled=self.bgm_enabled.get(),
                         focus=self.selected_focus.get()
