@@ -435,7 +435,12 @@ def render_documentary(playlist_path='story_playlist.json', config_path='config.
         "Life is a Journey",
         "Moments to Treasure",
         "Timeless Memories",
-        "To Be Continued..."
+        "To Be Continued...",
+        "Every Day is a New Beginning",
+        "Cherish Every Moment",
+        "Our Story Continues",
+        "Always in Our Hearts",
+        "Focus on the Good"
     ]
     ed_text = random.choice(ed_texts)
     ed_clip = create_title_card(ed_text, "", duration=4.0, font_size=50).fadein(1.0).fadeout(1.0)

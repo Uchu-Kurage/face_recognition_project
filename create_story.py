@@ -176,7 +176,7 @@ def create_story(person_name, period="All Time", focus="Balance", bgm_enabled=Fa
     # --- Step 0.5: 統計情報の出力 (各Focusへの該当件数を計算) ---
     count_smile = len([c for c in all_clips if c["happy"] >= 0.5])
     count_emotional = len([c for c in all_clips if c["drama"] >= 0.5])
-    count_active = len([c for c in all_clips if c["motion"] >= 3.0])
+    count_active = len([c for c in all_clips if c["motion"] >= 1.5])
     
     print(f"\n--- 素材統計 (全 {len(all_clips)} シーン) ---")
     print(f"  😊 笑顔 (Smile): {count_smile} シーン")
@@ -194,11 +194,11 @@ def create_story(person_name, period="All Time", focus="Balance", bgm_enabled=Fa
         filtered_clips = [c for c in all_clips if c["drama"] >= 0.5]
         filter_msg = "ドラマ度 50%以上"
     elif focus == "Active":
-        filtered_clips = [c for c in all_clips if c["motion"] >= 3.0]
-        filter_msg = "動き 3.0以上"
+        filtered_clips = [c for c in all_clips if c["motion"] >= 1.5]
+        filter_msg = "動き 1.5以上"
     else: # Balance
         # 他の3つの条件（笑顔、感動、動き）のいずれにも該当しない「日常」シーンを抽出
-        filtered_clips = [c for c in all_clips if not (c["happy"] >= 0.5 or c["drama"] >= 0.5 or c["motion"] >= 3.0)]
+        filtered_clips = [c for c in all_clips if not (c["happy"] >= 0.5 or c["drama"] >= 0.5 or c["motion"] >= 1.5)]
         filter_msg = "日常シーン（特徴的なクリップ以外）"
 
     # --- Step 1.5: フォールバック処理 (クリップが少なすぎる場合) ---
@@ -319,6 +319,13 @@ def create_story(person_name, period="All Time", focus="Balance", bgm_enabled=Fa
     
     print(f"📋 PLAYLIST (Total: {len(playlist)} clips, approx 60s):")
     print("(Chronologically ordered for a smooth narrative flow)\n")
+    
+    # 重視項目に応じた表示ラベルの決定
+    score_label = "Happy"
+    if focus == "Active": score_label = "Motion"
+    elif focus == "Emotional": score_label = "Drama"
+    elif focus == "Balance": score_label = "Score"
+
     for i, clip in enumerate(playlist):
         # Find which phase the clip belongs to based on original segment lists
         phase = "?"
@@ -327,7 +334,13 @@ def create_story(person_name, period="All Time", focus="Balance", bgm_enabled=Fa
         elif clip in ten: phase = "転"
         elif clip in ketsu: phase = "結"
         
-        print(f"[{phase}] {os.path.basename(clip['video_path'])} @ {clip['t']}s (Time: {clip['timestamp']}, Happy: {clip['happy']})")
+        # 重視項目のスコアを取得（Balanceの場合は内部算出のトータルスコアを表示）
+        if focus == "Balance":
+            val = round(clip.get("_total_score", 0), 3)
+        else:
+            val = round(clip.get(score_label.lower(), 0), 3)
+
+        print(f"[{phase}] {os.path.basename(clip['video_path'])} @ {clip['t']}s (Time: {clip['timestamp']}, {score_label}: {val})")
 
     # Save playlist to a file for render_story to read
     playlist_data = {

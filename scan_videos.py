@@ -467,40 +467,44 @@ def run_scan(video_folder, target_pkl='target_faces.pkl', output_json=None, forc
                     video_path = futures.pop(future)
                     completed_count += 1
                     
-                try:
-                    results_per_person = future.result()
-                    
-                    # 進捗表示（I/Oの前に出すことで即時性を確保）
-                    pct = int((completed_count / len(to_scan)) * 100)
-                    print(f"進捗: {pct}% ({completed_count}/{len(to_scan)}本完了) - {os.path.basename(video_path)}")
-                    sys.stdout.flush()
+                    try:
+                        results_per_person = future.result()
+                        
+                        # 誰がヒットしたかを確認
+                        hit_names = [name for name, ts in results_per_person.items() if len(ts) > 0]
+                        hit_info = f" [HIT: {', '.join(hit_names)}]" if hit_names else " [No Hits]"
+                        
+                        # 進捗表示
+                        pct = int((completed_count / len(to_scan)) * 100)
+                        print(f"進捗: {pct}% ({completed_count}/{len(to_scan)}本完了) - {os.path.basename(video_path)}{hit_info}")
+                        sys.stdout.flush()
 
-                    # --- マージ処理 ---
-                    # 毎回ファイル全体をリロードすると非常に遅いため、インメモリの results を直接更新する
-                    mtime = os.path.getmtime(video_path)
-                    dt = datetime.datetime.fromtimestamp(mtime)
-                    month_str = dt.strftime('%Y-%m')
-                    date_str = dt.strftime('%Y-%m-%d %H:%M:%S')
-                    results["metadata"][video_path] = {"month": month_str, "date": date_str}
-                    
-                    for name, ts_list in results_per_person.items():
-                        if name not in results["people"]:
-                            results["people"][name] = {}
-                        if ts_list:
-                            # タイムスタンプの最終確定
-                            for det in ts_list:
-                                if det.get("timestamp") == "PENDING":
-                                    det["timestamp"] = date_str
-                            results["people"][name][video_path] = ts_list
-                        elif video_path in results["people"][name]:
-                            # 検出されなかった場合は削除（再スキャン時など）
-                            del results["people"][name][video_path]
-                    
-                    # 1本ごとに保存（大規模スキャン時のクラッシュ対策）
-                    save_json_atomic(output_json, results)
+                        # --- マージ処理 ---
+                        # 毎回ファイル全体をリロードすると非常に遅いため、インメモリの results を直接更新する
+                        mtime = os.path.getmtime(video_path)
+                        dt = datetime.datetime.fromtimestamp(mtime)
+                        month_str = dt.strftime('%Y-%m')
+                        date_str = dt.strftime('%Y-%m-%d %H:%M:%S')
+                        results["metadata"][video_path] = {"month": month_str, "date": date_str}
+                        
+                        for name, ts_list in results_per_person.items():
+                            if name not in results["people"]:
+                                results["people"][name] = {}
+                            if ts_list:
+                                # タイムスタンプの最終確定
+                                for det in ts_list:
+                                    if det.get("timestamp") == "PENDING":
+                                        det["timestamp"] = date_str
+                                results["people"][name][video_path] = ts_list
+                            elif video_path in results["people"][name]:
+                                # 検出されなかった場合は削除（再スキャン時など）
+                                del results["people"][name][video_path]
+                        
+                        # 1本ごとに保存（大規模スキャン時のクラッシュ対策）
+                        save_json_atomic(output_json, results)
 
-                except Exception as e:
-                    print(f"  エラー ({os.path.basename(video_path)}): {e}")
+                    except Exception as e:
+                        print(f"  エラー ({os.path.basename(video_path)}): {e}")
     finally:
         # マネージャを確実にシャットダウンしてリソースを解放する
         if 'manager' in locals():
