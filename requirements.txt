@@ -6,7 +6,7 @@ packaging
 pillow
 psutil
 pygame
-pyinstaller==5.13.2
+pyinstaller==6.10.0
 requests
 tqdm
 customtkinter

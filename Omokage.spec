@@ -33,15 +33,24 @@ for pkg in ['imageio', 'moviepy', 'customtkinter', 'requests', 'face_recognition
 
 a = Analysis(
     ['app.py'],
-    pathex=[],
+    pathex=['.'], # Look for modules in the current directory
     binaries=binaries,
     datas=datas,
-    hiddenimports=hiddenimports,
+    hiddenimports=hiddenimports + [
+        'render_story',
+        'create_digest', 
+        'create_story', 
+        'scan_videos',
+        'utils',
+        '_tkinter',
+        'tkinter'
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
+    # Removed 'libz', 'lzma', '_lzma' from excludes as they are needed by standard libs
     excludes=['pandas', 'tensorflow', 'keras', 'deepface', 'transformers', 'diffusers', 'torch', 'h5py', 
-              'libpng', 'libjpeg', 'libtiff', 'libz', 'libwebp', 'lzma', '_lzma'],
+              'libpng', 'libjpeg', 'libtiff', 'libwebp'],
     noarchive=False,
 )
 

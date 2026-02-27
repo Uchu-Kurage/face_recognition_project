@@ -378,8 +378,8 @@ class ModernDigestApp(ctk.CTk):
         self.icon_video = load_icon("icon_video.png")
         self.icon_refresh = load_icon("icon_refresh.png")
         self.icon_search = load_icon("icon_search.png")
-        self.icon_nav_scan = load_icon("icon_nav_scan.png", size=(25, 25))
-        self.icon_nav_edit = load_icon("icon_nav_edit.png", size=(25, 25))
+        self.icon_nav_scan = load_icon("icon_search.png", size=(25, 25))
+        self.icon_nav_edit = load_icon("icon_video.png", size=(25, 25))
         self.icon_nav_info = load_icon("icon_nav_info.png", size=(25, 25))
 
     def create_layout(self):
