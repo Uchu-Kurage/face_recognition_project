@@ -208,6 +208,7 @@ def render_documentary(playlist_path='story_playlist.json', config_path='config.
             print(f"    [DEBUG] Full Path: {video_path}")
             
             # メタデータの詳細ログ出力 (1行に集約)
+            try:
                 ffprobe_path = get_ffprobe_path()
                 meta_cmd = [
                     ffprobe_path, "-v", "error",

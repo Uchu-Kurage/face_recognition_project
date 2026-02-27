@@ -25,34 +25,53 @@ def resource_path(relative_path):
 
 def get_ffprobe_path():
     """Robustly find the ffprobe executable path."""
+    # 1. Try imageio_ffmpeg (Bundled with many moviepy installs)
     try:
         import imageio_ffmpeg
         ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
-        # imageio_ffmpeg provides ffmpeg, we check for ffprobe in the same dir
-        ffprobe_exe = ffmpeg_exe.replace("ffmpeg", "ffprobe")
-        if os.path.exists(ffprobe_exe):
-            return ffprobe_exe
+        # On Windows, ffmpeg_exe might be .../ffmpeg-win64-v4.2.2.exe
+        # On Mac, it might be .../ffmpeg-osx64-v4.2.2
+        dirname = os.path.dirname(ffmpeg_exe)
+        for f in os.listdir(dirname):
+            if f.startswith("ffprobe"):
+                return os.path.join(dirname, f)
     except Exception:
         pass
 
-    # Search common system paths
-    search_paths = [
-        "ffprobe", # Check System PATH
-        "/opt/homebrew/bin/ffprobe", # Apple Silicon Homebrew
-        "/usr/local/bin/ffprobe",    # Intel Mac Homebrew / Manual install
-        "/usr/bin/ffprobe"
-    ]
-    
+    # 2. Search common system paths
     import subprocess
+    is_windows = sys.platform == "win32"
+    
+    search_paths = ["ffprobe"]
+    if is_windows:
+        search_paths[0] = "ffprobe.exe"
+        # Common Windows paths if not in PATH
+        potential_dirs = [
+            os.path.join(os.environ.get("ProgramFiles", "C:\\Program Files"), "ffmpeg", "bin"),
+            "C:\\ffmpeg\\bin"
+        ]
+        for d in potential_dirs:
+            p = os.path.join(d, "ffprobe.exe")
+            if os.path.exists(p):
+                search_paths.append(p)
+    else:
+        # Mac/Linux paths
+        search_paths.extend([
+            "/opt/homebrew/bin/ffprobe",
+            "/usr/local/bin/ffprobe",
+            "/usr/bin/ffprobe"
+        ])
+    
     for p in search_paths:
         try:
             # Check if it actually works
-            subprocess.run([p, "-version"], capture_output=True, check=True)
+            # Using shell=is_windows to better handle bare command lookup on Windows
+            subprocess.run([p, "-version"], capture_output=True, check=True, shell=is_windows)
             return p
         except Exception:
             continue
             
-    return "ffprobe" # Fallback to bare command
+    return "ffprobe.exe" if is_windows else "ffprobe"
 
 def get_app_dir():
     """ Get the directory of the executable or script """

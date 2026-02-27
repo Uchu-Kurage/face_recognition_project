@@ -187,6 +187,7 @@ def create_digest(scan_results_path, target_person_name=None, config_path='confi
                     print(f"    [DEBUG] Full Path: {video_path}")
                     
                     # メタデータの詳細ログ出力 (1行に集約)
+                    try:
                         ffprobe_path = get_ffprobe_path()
                         meta_cmd = [
                             ffprobe_path, "-v", "error", "-select_streams", "v:0",
