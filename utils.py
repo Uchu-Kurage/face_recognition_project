@@ -23,6 +23,37 @@ def resource_path(relative_path):
 
     return os.path.join(base_path, relative_path)
 
+def get_ffprobe_path():
+    """Robustly find the ffprobe executable path."""
+    try:
+        import imageio_ffmpeg
+        ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
+        # imageio_ffmpeg provides ffmpeg, we check for ffprobe in the same dir
+        ffprobe_exe = ffmpeg_exe.replace("ffmpeg", "ffprobe")
+        if os.path.exists(ffprobe_exe):
+            return ffprobe_exe
+    except Exception:
+        pass
+
+    # Search common system paths
+    search_paths = [
+        "ffprobe", # Check System PATH
+        "/opt/homebrew/bin/ffprobe", # Apple Silicon Homebrew
+        "/usr/local/bin/ffprobe",    # Intel Mac Homebrew / Manual install
+        "/usr/bin/ffprobe"
+    ]
+    
+    import subprocess
+    for p in search_paths:
+        try:
+            # Check if it actually works
+            subprocess.run([p, "-version"], capture_output=True, check=True)
+            return p
+        except Exception:
+            continue
+            
+    return "ffprobe" # Fallback to bare command
+
 def get_app_dir():
     """ Get the directory of the executable or script """
     if getattr(sys, 'frozen', False):

@@ -10,7 +10,7 @@ from datetime import datetime
 import random
 import subprocess
 import imageio_ffmpeg
-from utils import resource_path, load_config
+from utils import resource_path, load_config, get_ffprobe_path
 
 def load_scan_results(json_path='scan_results.json'):
     if not os.path.exists(json_path):
@@ -24,15 +24,7 @@ def load_scan_results(json_path='scan_results.json'):
 def get_video_rotation(path):
     """ffprobeを使用して動画の回転メタデータを取得する。"""
     try:
-        ffmpeg_exe = imageio_ffmpeg.get_ffmpeg_exe()
-        ffprobe_exe = ffmpeg_exe.replace("ffmpeg", "ffprobe")
-        if not os.path.exists(ffprobe_exe):
-            for p in ["ffprobe", "/usr/local/bin/ffprobe", "/opt/homebrew/bin/ffprobe"]:
-                try:
-                    subprocess.run([p, "-version"], capture_output=True, check=True)
-                    ffprobe_exe = p
-                    break
-                except: continue
+        ffprobe_exe = get_ffprobe_path()
         cmd = [ffprobe_exe, "-v", "error", "-select_streams", "v:0", "-show_entries", "stream_side_data=rotation", "-of", "json", path]
         startupinfo = None
         if os.name == 'nt':
@@ -195,9 +187,9 @@ def create_digest(scan_results_path, target_person_name=None, config_path='confi
                     print(f"    [DEBUG] Full Path: {video_path}")
                     
                     # メタデータの詳細ログ出力 (1行に集約)
-                    try:
+                        ffprobe_path = get_ffprobe_path()
                         meta_cmd = [
-                            "ffprobe", "-v", "error", "-select_streams", "v:0",
+                            ffprobe_path, "-v", "error", "-select_streams", "v:0",
                             "-show_entries", "stream=width,height,display_aspect_ratio,pix_fmt:stream_tags:stream_side_data",
                             "-of", "json", video_path
                         ]
