@@ -1102,6 +1102,12 @@ class ModernDigestApp(ctk.CTk):
         
         def run():
             try:
+                # Direct call instead of subprocess
+                current_stdout = sys.stdout
+                current_stderr = sys.stderr
+                sys.stdout = RedirectText(lambda s: self.log(s, end=""))
+                sys.stderr = RedirectText(lambda s: self.log(s, end=""))
+                
                 try:
                     create_digest.create_digest(
                         self.SCAN_RESULTS_FILE, 
