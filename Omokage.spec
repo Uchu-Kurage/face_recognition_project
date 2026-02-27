@@ -20,28 +20,22 @@ hiddenimports = [
     'moviepy.video.compositing.CompositeVideoClip',
     'moviepy.audio.AudioClip',
     'decorator',
-    'decorator',
     'onnxruntime'
 ]
 
 # Collect all (datas, binaries, hiddenimports) for tricky packages
-for pkg in ['imageio', 'moviepy', 'customtkinter', 'requests', 'face_recognition', 'dlib', 'onnxruntime']:
+for pkg in ['imageio', 'imageio_ffmpeg', 'moviepy', 'customtkinter', 'requests', 'face_recognition', 'dlib', 'onnxruntime']:
     tmp_ret = collect_all(pkg)
     datas += tmp_ret[0]
     binaries += tmp_ret[1]
     hiddenimports += tmp_ret[2]
 
 a = Analysis(
-    ['app.py'],
-    pathex=['.'], # Look for modules in the current directory
+    ['app.py', 'render_story.py', 'create_digest.py', 'create_story.py', 'scan_videos.py', 'utils.py'],
+    pathex=[os.path.abspath(os.curdir)], # Absolute path to current directory
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports + [
-        'render_story',
-        'create_digest', 
-        'create_story', 
-        'scan_videos',
-        'utils',
         '_tkinter',
         'tkinter'
     ],
@@ -53,8 +47,6 @@ a = Analysis(
               'libpng', 'libjpeg', 'libtiff', 'libwebp'],
     noarchive=False,
 )
-
-pyz = PYZ(a.pure)
 
 pyz = PYZ(a.pure)
 
