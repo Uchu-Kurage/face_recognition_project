@@ -208,6 +208,10 @@ def render_documentary(playlist_path='story_playlist.json', config_path='config.
             print(f"    [DEBUG] Full Path: {video_path}")
             
             # メタデータの詳細ログ出力 (1行に集約)
+            try:
+                ffprobe_exe = get_ffprobe_path()
+                meta_cmd = [ffprobe_exe, "-v", "quiet", "-print_format", "json", "-show_format", "-show_streams", video_path]
+                
                 # Use startupinfo and shell=True for Windows
                 startupinfo = None
                 if os.name == 'nt':
