@@ -66,12 +66,26 @@ def get_ffprobe_path():
         try:
             # Check if it actually works
             # Using shell=is_windows to better handle bare command lookup on Windows
-            subprocess.run([p, "-version"], capture_output=True, check=True, shell=is_windows)
+            # Also use startupinfo to hide console window on Windows
+            startupinfo = None
+            if is_windows:
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            
+            subprocess.run([p, "-version"], capture_output=True, check=True, shell=is_windows, startupinfo=startupinfo)
             return p
         except Exception:
             continue
             
-    return "ffprobe.exe" if is_windows else "ffprobe"
+    # Final fallback logic: 
+    # If we found nothing, let's at least return a likely name.
+    if is_windows:
+        # Check if it's in the same directory as the app
+        local_exe = os.path.join(get_app_dir(), "ffprobe.exe")
+        if os.path.exists(local_exe):
+            return local_exe
+        return "ffprobe.exe"
+    return "ffprobe"
 
 def get_app_dir():
     """ Get the directory of the executable or script """

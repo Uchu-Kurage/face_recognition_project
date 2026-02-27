@@ -30,7 +30,7 @@ def get_video_rotation(path):
         if os.name == 'nt':
             startupinfo = subprocess.STARTUPINFO()
             startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-        result = subprocess.run(cmd, capture_output=True, text=True, startupinfo=startupinfo)
+        result = subprocess.run(cmd, capture_output=True, text=True, startupinfo=startupinfo, shell=os.name == 'nt')
         if result.returncode == 0:
             data = json.loads(result.stdout)
             streams = data.get("streams", [])
@@ -194,7 +194,13 @@ def create_digest(scan_results_path, target_person_name=None, config_path='confi
                             "-show_entries", "stream=width,height,display_aspect_ratio,pix_fmt:stream_tags:stream_side_data",
                             "-of", "json", video_path
                         ]
-                        meta_json = json.loads(subprocess.check_output(meta_cmd).decode('utf-8'))
+                        # Use startupinfo and shell=True for Windows
+                        startupinfo = None
+                        if os.name == 'nt':
+                            startupinfo = subprocess.STARTUPINFO()
+                            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                        
+                        meta_json = json.loads(subprocess.check_output(meta_cmd, startupinfo=startupinfo, shell=os.name == 'nt').decode('utf-8'))
                         meta_flat = json.dumps(meta_json, separators=(',', ':'))
                         print(f"    [DEBUG] Video Metadata: {meta_flat}")
                     except Exception as me:

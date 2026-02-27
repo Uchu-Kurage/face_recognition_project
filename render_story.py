@@ -32,7 +32,7 @@ def get_video_rotation(path):
             startupinfo = subprocess.STARTUPINFO()
             startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
             
-        result = subprocess.run(cmd, capture_output=True, text=True, startupinfo=startupinfo)
+        result = subprocess.run(cmd, capture_output=True, text=True, startupinfo=startupinfo, shell=os.name == 'nt')
         if result.returncode == 0:
             data = json.loads(result.stdout)
             streams = data.get("streams", [])
@@ -208,15 +208,13 @@ def render_documentary(playlist_path='story_playlist.json', config_path='config.
             print(f"    [DEBUG] Full Path: {video_path}")
             
             # メタデータの詳細ログ出力 (1行に集約)
-            try:
-                ffprobe_path = get_ffprobe_path()
-                meta_cmd = [
-                    ffprobe_path, "-v", "error",
-                    "-select_streams", "v:0",
-                    "-show_entries", "stream=width,height,display_aspect_ratio,pix_fmt:stream_tags:stream_side_data",
-                    "-of", "json", video_path
-                ]
-                meta_json = json.loads(subprocess.check_output(meta_cmd).decode('utf-8'))
+                # Use startupinfo and shell=True for Windows
+                startupinfo = None
+                if os.name == 'nt':
+                    startupinfo = subprocess.STARTUPINFO()
+                    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                
+                meta_json = json.loads(subprocess.check_output(meta_cmd, startupinfo=startupinfo, shell=os.name == 'nt').decode('utf-8'))
                 # 冗長なパス情報などを除き、コンパクトに1行で出力
                 meta_flat = json.dumps(meta_json, separators=(',', ':'))
                 print(f"    [DEBUG] Video Metadata: {meta_flat}")
