@@ -55,12 +55,13 @@ def get_ffprobe_path():
             if os.path.exists(p):
                 search_paths.append(p)
     else:
-        # Mac/Linux paths
-        search_paths.extend([
+        # Mac/Linux paths - check common Homebrew/System paths first
+        search_paths = [
             "/opt/homebrew/bin/ffprobe",
             "/usr/local/bin/ffprobe",
-            "/usr/bin/ffprobe"
-        ])
+            "/usr/bin/ffprobe",
+            "ffprobe"
+        ]
     
     for p in search_paths:
         try:
