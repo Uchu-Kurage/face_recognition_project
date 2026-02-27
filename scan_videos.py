@@ -13,6 +13,13 @@ import concurrent.futures
 from concurrent.futures import ProcessPoolExecutor
 import numpy as np
 
+# Use spawn for Windows/macOS to ensure clean subprocess environment
+try:
+    if sys.platform != "linux":
+        multiprocessing.set_start_method('spawn', force=True)
+except:
+    pass
+
 # 感情分析用ライブラリ（ONNX）を遅延インポート
 emotion_analyzer = None
 
@@ -518,6 +525,9 @@ def run_scan(video_folder, target_pkl='target_faces.pkl', output_json=None, forc
 
 if __name__ == "__main__":
     import argparse
+    # Ensure freeze_support is called at the very beginning for Windows binaries
+    multiprocessing.freeze_support()
+    
     parser = argparse.ArgumentParser()
     parser.add_argument("video_folder")
     parser.add_argument("target_pkl", nargs="?", default='target_faces.pkl')

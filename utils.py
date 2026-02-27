@@ -105,12 +105,8 @@ def get_app_dir():
 def get_user_data_dir():
     """Returns a writable user data directory (Documents/Omokage)"""
     app_name = "Omokage"
-    if sys.platform == "win32":
-        # Use %APPDATA%
-        base_dir = os.getenv('APPDATA') or os.path.expanduser("~")
-        data_dir = os.path.join(base_dir, app_name)
-    elif sys.platform == "darwin":
-        # User requested to use Documents/Omokage
+    # Use Documents/Omokage for all platforms if possible
+    if sys.platform == "win32" or sys.platform == "darwin":
         base_dir = os.path.expanduser("~/Documents")
         data_dir = os.path.join(base_dir, app_name)
     else:
