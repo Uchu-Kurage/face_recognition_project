@@ -491,7 +491,8 @@ class ModernDigestApp(ctk.CTk):
 
         # Analysis Controls (Bottom)
         self.right_ctrl_cnt = ctk.CTkFrame(self.video_area, fg_color="transparent")
-        self.right_ctrl_cnt.pack(fill="x", pady=(5, 15), padx=10)
+        # 操作ボタンを動画リストより先に配置し、ウィンドウが低くてもボタンが押し出されないようにする
+        self.right_ctrl_cnt.pack(side="bottom", fill="x", pady=(5, 15), padx=10, before=self.scanned_cnt)
         
         self.cb_force = ctk.CTkCheckBox(self.right_ctrl_cnt, text="スキャン済みも再度スキャンして上書き", 
                                         variable=self.force_rescan, font=ctk.CTkFont(size=11),
