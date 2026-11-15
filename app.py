@@ -22,6 +22,7 @@ import re
 from collections import Counter
 from extract_features import register_person, delete_person
 import scan_videos
+import transcribe_videos
 import create_digest
 import create_story
 import render_story
@@ -113,6 +114,8 @@ class ModernDigestApp(ctk.CTk):
              os.makedirs(self.DEFAULT_OUTPUT_DIR, exist_ok=True)
         
         self.OUTPUT_DIR = self.DEFAULT_OUTPUT_DIR # Will be updated by config
+        self.TRANSCRIPTS_FILE = os.path.join(self.user_data_dir, "transcripts.json")
+        self.TRANSCRIPTS_DIR = os.path.join(self.OUTPUT_DIR, "transcripts")
         
         # Load Config First
         self.config = self.load_config()
@@ -497,6 +500,20 @@ class ModernDigestApp(ctk.CTk):
                                           fg_color=self.COLOR_ACCENT, hover_color=self.COLOR_HOVER, text_color="black")
         self.btn_scan_run.pack(pady=5, padx=10, fill="x")
 
+        self.transcribe_row = ctk.CTkFrame(self.right_ctrl_cnt, fg_color="transparent")
+        self.transcribe_row.pack(pady=5, padx=10, fill="x")
+
+        self.btn_transcribe = ctk.CTkButton(self.transcribe_row, text="人物ごとの音声テキスト抽出",
+                                            command=self.start_transcription, height=35,
+                                            font=ctk.CTkFont(size=12, weight="bold"),
+                                            fg_color=self.COLOR_ACCENT, hover_color=self.COLOR_HOVER, text_color="black")
+        self.btn_transcribe.pack(side="left", fill="x", expand=True)
+
+        ctk.CTkButton(self.transcribe_row, text="テキストを開く", width=110, height=35,
+                      font=ctk.CTkFont(size=12),
+                      fg_color=self.COLOR_SIDEBAR, border_width=1, border_color="gray",
+                      command=self.open_transcripts).pack(side="left", padx=(8, 0))
+
 
 
         # --- B. EDIT PAGE ---
@@ -809,6 +826,7 @@ class ModernDigestApp(ctk.CTk):
         self.save_config() 
 
         self.btn_scan_run.configure(text="中断 (Stop)", fg_color="#CD6155", hover_color="#A93226", command=self.stop_scan)
+        self.btn_transcribe.configure(state="disabled")
         self.is_running = True
         self.scan_stop_event.clear()
         self.log(f">>> 動画スキャンを開始: {folder}")
@@ -853,6 +871,80 @@ class ModernDigestApp(ctk.CTk):
         self.log(">>> 中断リクエストを送信しました。現在の動画の処理が終わり次第停止します...")
         self.scan_stop_event.set()
         self.btn_scan_run.configure(state="disabled", text="中断中...")
+
+    def start_transcription(self):
+        if self.is_running: return
+
+        try:
+            import faster_whisper  # noqa: F401
+        except ImportError:
+            messagebox.showerror("エラー", "faster-whisper がインストールされていません。\n\npip install faster-whisper を実行してください。")
+            return
+
+        self.btn_transcribe.configure(text="中断 (Stop)", fg_color="#CD6155", hover_color="#A93226", command=self.stop_transcription)
+        self.btn_scan_run.configure(state="disabled")
+        self.is_running = True
+        self.scan_stop_event.clear()
+        self.render_phase = "init"
+        self.progressbar.set(0)
+        self.log(">>> 人物ごとの音声テキスト抽出を開始")
+
+        def run():
+            try:
+                current_stdout = sys.stdout
+                current_stderr = sys.stderr
+                sys.stdout = RedirectText(lambda s: self.log(s, end=""))
+                sys.stderr = RedirectText(lambda s: self.log(s, end=""))
+
+                try:
+                    written = transcribe_videos.run_transcription(
+                        scan_json=self.SCAN_RESULTS_FILE,
+                        output_json=self.TRANSCRIPTS_FILE,
+                        text_output_dir=self.TRANSCRIPTS_DIR,
+                        force=self.force_rescan.get(),
+                        stop_event=self.scan_stop_event)
+                finally:
+                    sys.stdout = current_stdout
+                    sys.stderr = current_stderr
+
+                if self.scan_stop_event.is_set():
+                    self.log("\n>>> TRANSCRIPTION CANCELLED!")
+                    self.log("__NOTIFY__", title="中断", message="音声テキスト抽出を中断しました。")
+                elif written is None:
+                    self.log("__NOTIFY__", title="警告", message="人物が検出された動画がありません。\n先に動画スキャンを実行してください。", type="warning")
+                else:
+                    self.log("\n>>> TRANSCRIPTION COMPLETE!")
+                    self.log("__NOTIFY__", title="完了", message=f"音声テキスト抽出が完了しました。\n({len(written)} 人分のテキストを保存)")
+            except Exception as e:
+                self.log(f"ERROR: {e}")
+                self.log("__NOTIFY__", title="エラー", message=str(e), type="error")
+            finally:
+                self.is_running = False
+                self.scan_stop_event.clear()
+                self.after(0, self.reset_transcribe_ui)
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def stop_transcription(self):
+        if not self.is_running: return
+        self.log(">>> 中断リクエストを送信しました。現在の発話の処理が終わり次第停止します...")
+        self.scan_stop_event.set()
+        self.btn_transcribe.configure(state="disabled", text="中断中...")
+
+    def reset_transcribe_ui(self):
+        self.btn_transcribe.configure(state="normal", text="人物ごとの音声テキスト抽出",
+                                      fg_color=self.COLOR_ACCENT, hover_color=self.COLOR_HOVER,
+                                      command=self.start_transcription)
+        self.btn_scan_run.configure(state="normal")
+
+    def open_transcripts(self):
+        os.makedirs(self.TRANSCRIPTS_DIR, exist_ok=True)
+        if sys.platform == 'darwin':
+            subprocess.run(['open', self.TRANSCRIPTS_DIR])
+        elif sys.platform == 'win32':
+            os.startfile(self.TRANSCRIPTS_DIR)
+        else:
+            subprocess.run(['xdg-open', self.TRANSCRIPTS_DIR])
 
     def refresh_scanned_files(self, show_all=False):
         # Clear and show loading state
@@ -1080,6 +1172,7 @@ class ModernDigestApp(ctk.CTk):
         self.btn_scan_run.configure(state="normal", text="新規スキャン開始", 
                                     fg_color=self.COLOR_ACCENT, hover_color=self.COLOR_HOVER,
                                     command=self.start_sequential_scan)
+        self.btn_transcribe.configure(state="normal")
         self.is_running = False
 
     def start_digest_only(self):

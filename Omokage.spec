@@ -20,18 +20,19 @@ hiddenimports = [
     'moviepy.video.compositing.CompositeVideoClip',
     'moviepy.audio.AudioClip',
     'decorator',
-    'onnxruntime'
+    'onnxruntime',
+    'faster_whisper'
 ]
 
 # Collect all (datas, binaries, hiddenimports) for tricky packages
-for pkg in ['imageio', 'imageio_ffmpeg', 'moviepy', 'customtkinter', 'requests', 'face_recognition', 'dlib', 'onnxruntime']:
+for pkg in ['imageio', 'imageio_ffmpeg', 'moviepy', 'customtkinter', 'requests', 'face_recognition', 'dlib', 'onnxruntime', 'faster_whisper', 'ctranslate2', 'tokenizers']:
     tmp_ret = collect_all(pkg)
     datas += tmp_ret[0]
     binaries += tmp_ret[1]
     hiddenimports += tmp_ret[2]
 
 a = Analysis(
-    ['app.py', 'render_story.py', 'create_digest.py', 'create_story.py', 'scan_videos.py', 'utils.py'],
+    ['app.py', 'render_story.py', 'create_digest.py', 'create_story.py', 'scan_videos.py', 'transcribe_videos.py', 'utils.py'],
     pathex=[os.path.abspath(os.curdir)], # Absolute path to current directory
     binaries=binaries,
     datas=datas,
