@@ -17,6 +17,12 @@ PRESENCE_TOLERANCE_SEC = 0.75
 UTTERANCE_GAP_SEC = 1.0
 SENTENCE_ENDINGS = ("。", "？", "！", "?", "!")
 
+# Whisperが無音や雑音に対して出しがちな、実際には話されていない定型文
+HALLUCINATION_PHRASES = (
+    "ご視聴ありがとうございました", "ご覧いただきありがとうございます", "チャンネル登録",
+    "最後までご視聴", "字幕", "thank you", "thanks for watching",
+)
+
 
 def get_ffmpeg_exe():
     try:
@@ -63,8 +69,9 @@ def transcribe_video(model, video_path, language="ja", stop_event=None):
         print(f"  音声トラックがありません: {os.path.basename(video_path)}")
         return []
 
+    # condition_on_previous_text=False: 同じ文の繰り返しや幻聴の連鎖を防ぐ
     segments, _ = model.transcribe(audio, language=language, vad_filter=True, beam_size=5,
-                                   word_timestamps=True)
+                                   word_timestamps=True, condition_on_previous_text=False)
 
     results = []
     for seg in segments:
@@ -101,6 +108,11 @@ def split_into_utterances(words):
     return utterances
 
 
+def is_hallucination(text):
+    normalized = text.strip().strip("。.!！ ").lower()
+    return any(p in normalized for p in HALLUCINATION_PHRASES)
+
+
 def people_on_screen(scan_results, video_path, start, end):
     """発話区間中に画面に映っていた人物を、映っていた割合の高い順に返す"""
     lo = start - PRESENCE_TOLERANCE_SEC
@@ -134,6 +146,8 @@ def build_people_index(transcripts, scan_results):
     for video_path, info in transcripts.items():
         date = metadata.get(video_path, {}).get("date", "")
         for seg in info.get("segments", []):
+            if is_hallucination(seg["text"]):
+                continue
             names = people_on_screen(scan_results, video_path, seg["start"], seg["end"])
             seg["people"] = names
             entry = {"video": video_path, "date": date, "start": seg["start"], "end": seg["end"], "text": seg["text"]}
@@ -167,6 +181,15 @@ def write_text_files(people, output_dir):
             f.write("\n".join(lines) + "\n")
         written.append(path)
     return written
+
+
+def update_outputs(data, scan_results, output_json, text_output_dir):
+    people, unassigned = build_people_index(data["videos"], scan_results)
+    data["people"] = people
+    data["unassigned"] = unassigned
+    save_json_atomic(output_json, data)
+    written = write_text_files(people, text_output_dir)
+    return people, unassigned, written
 
 
 def run_transcription(scan_json=None, output_json=None, text_output_dir=None,
@@ -220,18 +243,14 @@ def run_transcription(scan_json=None, output_json=None, text_output_dir=None,
                 "transcribed_at": datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                 "segments": segments,
             }
-            save_json_atomic(output_json, data)
+            # 1本ごとに人物別テキストを更新し、途中でも結果を確認できるようにする
+            update_outputs(data, scan_results, output_json, text_output_dir)
 
             pct = int(i / len(to_process) * 100)
             print(f"進捗: {pct}%| ({i}/{len(to_process)}本完了) - {os.path.basename(video_path)} [{len(segments)} 発話]")
             sys.stdout.flush()
 
-    people, unassigned = build_people_index(transcripts, scan_results)
-    data["people"] = people
-    data["unassigned"] = unassigned
-    save_json_atomic(output_json, data)
-
-    written = write_text_files(people, text_output_dir)
+    people, unassigned, written = update_outputs(data, scan_results, output_json, text_output_dir)
     print(f"\n人物ごとのテキストを保存しました: {text_output_dir}")
     for name, entries in people.items():
         if entries:
