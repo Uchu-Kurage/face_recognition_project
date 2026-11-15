@@ -520,7 +520,7 @@ class ModernDigestApp(ctk.CTk):
         self.transcribe_row = ctk.CTkFrame(self.right_ctrl_cnt, fg_color="transparent")
         self.transcribe_row.pack(pady=5, padx=10, fill="x")
 
-        self.btn_transcribe = ctk.CTkButton(self.transcribe_row, text="人物ごとの音声テキスト抽出",
+        self.btn_transcribe = ctk.CTkButton(self.transcribe_row, text="音声テキスト抽出",
                                             command=self.start_transcription, height=35,
                                             font=ctk.CTkFont(size=12, weight="bold"),
                                             fg_color=self.COLOR_ACCENT, hover_color=self.COLOR_HOVER, text_color="black")
@@ -938,7 +938,7 @@ class ModernDigestApp(ctk.CTk):
         self.scan_stop_event.clear()
         self.render_phase = "init"
         self.progressbar.set(0)
-        self.log(">>> 人物ごとの音声テキスト抽出を開始")
+        self.log(">>> 音声テキスト抽出を開始")
 
         # BGM用に設定済みのHugging Faceトークンがあれば、音声認識モデルのダウンロードにも使う
         token = self.hf_token.get().strip()
@@ -990,7 +990,7 @@ class ModernDigestApp(ctk.CTk):
         self.btn_transcribe.configure(state="disabled", text="中断中...")
 
     def reset_transcribe_ui(self):
-        self.btn_transcribe.configure(state="normal", text="人物ごとの音声テキスト抽出",
+        self.btn_transcribe.configure(state="normal", text="音声テキスト抽出",
                                       fg_color=self.COLOR_ACCENT, hover_color=self.COLOR_HOVER,
                                       command=self.start_transcription)
         self.btn_scan_run.configure(state="normal")

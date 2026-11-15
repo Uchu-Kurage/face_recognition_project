@@ -4,6 +4,7 @@ import re
 import subprocess
 import zlib
 import json
+from collections import Counter
 import datetime
 import numpy as np
 import cv2
@@ -71,7 +72,6 @@ BASELINE_WINDOW_SEC = 1.0
 BASELINE_MAX_WINDOWS = 8
 BASELINE_MIN_WINDOWS = 3
 BASELINE_RATIO = 1.5
-OFFSCREEN_LABEL = "画面外・撮影者"
 
 # --- 会話タイムライン ---
 TIMELINE_SPEAKER_OFFSCREEN = "撮影者"
@@ -381,10 +381,6 @@ def needs_speaker_analysis(info):
     return any(seg.get("speaker_v") != SPEAKER_ANALYSIS_VERSION for seg in info.get("segments", []))
 
 
-def safe_filename(name):
-    return re.sub(r'[\\/:*?"<>|]', "_", name).strip() or "unknown"
-
-
 def format_time(sec):
     m, s = divmod(int(sec), 60)
     h, m = divmod(m, 60)
@@ -440,19 +436,6 @@ def build_utterances(transcripts, scan_results, speech_start_dates=None):
 
 def speaker_names(r):
     return [] if r["speaker"] == TIMELINE_SPEAKER_OFFSCREEN else [r["speaker"]] + r["overlap_with"]
-
-
-def build_people_index(records, people_names):
-    """発話の記録を話者ごとに振り分ける (人が読むテキスト用)"""
-    people = {name: [] for name in people_names}
-    offscreen = []
-    for r in records:
-        names = speaker_names(r)
-        if not names:
-            offscreen.append(r)
-        for name in names:
-            people.setdefault(name, []).append(dict(r, with_people=[n for n in names if n != name]))
-    return people, offscreen
 
 
 def build_conversations(records):
@@ -537,51 +520,6 @@ def write_conversation_files(conversations, pairs, output_dir):
     return written
 
 
-def write_text_file(path, title, entries, note_fn):
-    lines = [f"# {title} ({len(entries)} 件)", ""]
-    current_video = None
-    for e in entries:
-        if e["video_path"] != current_video:
-            current_video = e["video_path"]
-            lines.append("")
-            lines.append(f"## {e['video']}  {recorded_label(e['recorded_at'])}")
-        lines.append(f"[{format_time(e['start'])} - {format_time(e['end'])}] {e['text']}{note_fn(e)}")
-    write_lines(path, lines)
-
-
-def person_note(e):
-    notes = []
-    if e["speaker_estimated"]:
-        notes.append("推定")
-    if e["with_people"]:
-        notes.append(f"同時: {', '.join(e['with_people'])}")
-    if e["low_confidence"]:
-        notes.append("低確度")
-    return notes_suffix(notes)
-
-
-def offscreen_note(e):
-    notes = [f"画面: {', '.join(e['on_screen'])}"] if e["on_screen"] else []
-    if e["low_confidence"]:
-        notes.append("低確度")
-    return notes_suffix(notes)
-
-
-def write_text_files(people, offscreen, output_dir):
-    written = []
-    for name, entries in people.items():
-        if not entries:
-            continue
-        path = os.path.join(output_dir, f"{safe_filename(name)}.txt")
-        write_text_file(path, f"{name} の発話テキスト", entries, person_note)
-        written.append(path)
-    if offscreen:
-        path = os.path.join(output_dir, f"{OFFSCREEN_LABEL}.txt")
-        write_text_file(path, f"{OFFSCREEN_LABEL}の発話テキスト", offscreen, offscreen_note)
-        written.append(path)
-    return written
-
-
 def write_utterances_jsonl(records, output_dir):
     """機械処理用: 全員の発話を1行1件のJSONで1ファイルにまとめる"""
     path = os.path.join(output_dir, UTTERANCES_JSONL)
@@ -595,7 +533,6 @@ def write_utterances_jsonl(records, output_dir):
 
 def update_outputs(data, scan_results, output_json, text_output_dir, speech_start_dates=None):
     records = build_utterances(data["videos"], scan_results, speech_start_dates)
-    people, offscreen = build_people_index(records, scan_results.get("people", {}).keys())
     conversations, pairs = build_conversations(records)
     data["conversations"] = conversations
     data["dialogue_pairs"] = pairs
@@ -606,8 +543,7 @@ def update_outputs(data, scan_results, output_json, text_output_dir, speech_star
     os.makedirs(text_output_dir, exist_ok=True)
     written = [write_utterances_jsonl(records, text_output_dir)]
     written += write_conversation_files(conversations, pairs, text_output_dir)
-    written += write_text_files(people, offscreen, text_output_dir)
-    return people, offscreen, written
+    return records, written
 
 
 def run_transcription(scan_json=None, output_json=None, text_output_dir=None,
@@ -698,13 +634,10 @@ def run_transcription(scan_json=None, output_json=None, text_output_dir=None,
               + (f" 話者: {', '.join(sorted(set(speakers)))}" if speakers else ""))
         sys.stdout.flush()
 
-    people, offscreen, written = update_outputs(data, scan_results, output_json, text_output_dir, speech_start_dates)
-    print(f"\n人物ごとのテキストを保存しました: {text_output_dir}")
-    for name, entries in people.items():
-        if entries:
-            print(f"- {name}: {len(entries)} 件")
-    if offscreen:
-        print(f"- {OFFSCREEN_LABEL}: {len(offscreen)} 件")
+    records, written = update_outputs(data, scan_results, output_json, text_output_dir, speech_start_dates)
+    print(f"\n発話テキストを保存しました: {text_output_dir}")
+    for speaker, n in Counter(r["speaker"] for r in records).most_common():
+        print(f"- {speaker}: {n} 件")
     return written
 
 
