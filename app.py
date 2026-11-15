@@ -17,6 +17,7 @@ import hashlib
 import unicodedata
 from PIL import Image, ImageTk
 import json
+import datetime
 import glob
 import re
 from collections import Counter
@@ -134,6 +135,8 @@ class ModernDigestApp(ctk.CTk):
         self.selected_focus = ctk.StringVar(value="バランス")
         self.bgm_enabled = ctk.BooleanVar(value=self.config.get("bgm_enabled", False))
         self.hf_token = ctk.StringVar(value=self.config.get("hf_token", ""))
+        # 人物ごとの「話し始めた日付」(これより前の動画ではその人物を話者にしない)
+        self.speech_start_dates = dict(self.config.get("speech_start_dates", {}))
         self.view_mode = "People" # Forced default
         self.clip_view_mode = "list" # "list" or "grid"
         self.selected_clips = set() # set of (video_path, timestamp)
@@ -729,7 +732,8 @@ class ModernDigestApp(ctk.CTk):
             "video_folder": self.video_folder_path.get(),
             "color_filter": self.color_filter.get(),
             "bgm_enabled": self.bgm_enabled.get(),
-            "hf_token": self.hf_token.get().strip()
+            "hf_token": self.hf_token.get().strip(),
+            "speech_start_dates": self.speech_start_dates
         }
         with open(self.CONFIG_FILE, 'w', encoding='utf-8') as f:
             json.dump(config, f, indent=4)
@@ -802,7 +806,10 @@ class ModernDigestApp(ctk.CTk):
                 lbl_img.pack(side="left", padx=5)
             except: pass
             
-            lbl_name = ctk.CTkLabel(frame, text=p_name, font=ctk.CTkFont(size=11), anchor="w")
+            name_text = p_name
+            if self.speech_start_dates.get(p_name):
+                name_text += f"\n話者: {self.speech_start_dates[p_name]}〜"
+            lbl_name = ctk.CTkLabel(frame, text=name_text, font=ctk.CTkFont(size=11), anchor="w", justify="left")
             lbl_name.pack(side="left", padx=5, expand=True, fill="x")
 
             btn_del = ctk.CTkButton(frame, text="×", width=24, height=24, 
@@ -811,6 +818,35 @@ class ModernDigestApp(ctk.CTk):
                                     anchor="center",
                                     command=lambda n=p_name: self.delete_click(n))
             btn_del.pack(side="right", padx=5)
+
+            btn_speech = ctk.CTkButton(frame, text="🗣", width=24, height=24,
+                                       fg_color="#5D6D7E", hover_color=self.COLOR_HOVER,
+                                       command=lambda n=p_name: self.edit_speech_start_date(n))
+            btn_speech.pack(side="right")
+
+    def edit_speech_start_date(self, name):
+        current = self.speech_start_dates.get(name, "")
+        dialog = ctk.CTkInputDialog(
+            title="話し始めた日付",
+            text=(f"{name} が言葉を話し始めた日付を入力してください (例: 2023-01-01)。\n"
+                  f"この日付より前の動画では、口が動いていても {name} の発言とは判定せず、撮影者側に振り分けます。\n"
+                  f"空欄で設定を解除します。\n\n現在の設定: {current or 'なし'}"))
+        value = dialog.get_input()
+        if value is None:
+            return  # Cancelled
+        value = value.strip().replace("/", "-")
+        if not value:
+            self.speech_start_dates.pop(name, None)
+        else:
+            try:
+                value = datetime.datetime.strptime(value, "%Y-%m-%d").strftime("%Y-%m-%d")
+            except ValueError:
+                messagebox.showerror("入力エラー", "日付は 2023-01-01 の形式で入力してください。")
+                return
+            self.speech_start_dates[name] = value
+        self.save_config()
+        self.refresh_profiles()
+        self.log(f"[SYSTEM] {name} の話し始めた日付: {value or 'なし'} (次回の音声テキスト抽出で反映されます)")
 
     def start_sequential_scan(self):
         if self.is_running: return
@@ -907,7 +943,8 @@ class ModernDigestApp(ctk.CTk):
                         output_json=self.TRANSCRIPTS_FILE,
                         text_output_dir=self.TRANSCRIPTS_DIR,
                         force=self.force_rescan.get(),
-                        stop_event=self.scan_stop_event)
+                        stop_event=self.scan_stop_event,
+                        speech_start_dates=dict(self.speech_start_dates))
                 finally:
                     sys.stdout = current_stdout
                     sys.stderr = current_stderr
@@ -919,7 +956,7 @@ class ModernDigestApp(ctk.CTk):
                     self.log("__NOTIFY__", title="警告", message="人物が検出された動画がありません。\n先に動画スキャンを実行してください。", type="warning")
                 else:
                     self.log("\n>>> TRANSCRIPTION COMPLETE!")
-                    self.log("__NOTIFY__", title="完了", message=f"音声テキスト抽出が完了しました。\n({len(written)} 人分のテキストを保存)")
+                    self.log("__NOTIFY__", title="完了", message=f"音声テキスト抽出が完了しました。\n({len(written)} ファイルを保存)")
             except Exception as e:
                 self.log(f"ERROR: {e}")
                 self.log("__NOTIFY__", title="エラー", message=str(e), type="error")
