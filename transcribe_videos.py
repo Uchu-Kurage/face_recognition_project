@@ -3,6 +3,8 @@ import sys
 import re
 import subprocess
 import zlib
+import json
+from collections import Counter
 import datetime
 import numpy as np
 import cv2
@@ -18,6 +20,17 @@ WHISPER_MODELS = {
     "small": "高速・低精度",
 }
 DEFAULT_WHISPER_MODEL = "large-v3-turbo"
+# 文字起こしの設定や保存する項目を変えたら上げる (古い版で文字起こしした動画はやり直す)
+TRANSCRIBE_VERSION = 2
+
+# 無音検出(VAD)の設定。幼児の発話は1秒前後と短く声も小さいので、
+# 既定 (threshold=0.5, min_silence=2000ms, pad=400ms) より細かく・敏感に区切る
+VAD_PARAMETERS = {
+    "threshold": 0.35,               # 発話とみなす確率 (低いほど小さな声も拾う)
+    "min_speech_duration_ms": 0,     # 発話とみなす最短の長さ (短い発話も落とさない)
+    "min_silence_duration_ms": 500,  # この長さ以上の無音で区間を区切る
+    "speech_pad_ms": 200,            # 区間の前後に付ける余白
+}
 
 # 発話区間の前後にこの秒数の余裕を持たせて人物の出現を判定する
 # (スキャンは0.5秒間隔なので、それより少し広めに取る)
@@ -59,12 +72,12 @@ BASELINE_WINDOW_SEC = 1.0
 BASELINE_MAX_WINDOWS = 8
 BASELINE_MIN_WINDOWS = 3
 BASELINE_RATIO = 1.5
-OFFSCREEN_LABEL = "画面外・撮影者"
 
 # --- 会話タイムライン ---
 TIMELINE_SPEAKER_OFFSCREEN = "撮影者"
 MERGE_SAME_SPEAKER_GAP_SEC = 1.5   # 同じ話者の発話がこの間隔以内に続けば1つの発言にまとめる
 DIALOGUE_PAIR_MAX_GAP_SEC = 5.0    # 話者が替わるまでの間隔がこれ以内なら「対話ペア」とみなす
+UTTERANCES_JSONL = "utterances.jsonl"
 
 
 def get_ffmpeg_exe():
@@ -112,8 +125,9 @@ def transcribe_video(model, video_path, language="ja", stop_event=None):
         print(f"  音声トラックがありません: {os.path.basename(video_path)}")
         return []
 
-    # condition_on_previous_text=False: 同じ文の繰り返しや幻聴の連鎖を防ぐ
-    segments, _ = model.transcribe(audio, language=language, vad_filter=True, beam_size=5,
+    # condition_on_previous_text=False: 前の誤認識に引きずられて同じ語を繰り返す連鎖を防ぐ
+    segments, _ = model.transcribe(audio, language=language, beam_size=5,
+                                   vad_filter=True, vad_parameters=VAD_PARAMETERS,
                                    word_timestamps=True, condition_on_previous_text=False)
 
     results = []
@@ -121,9 +135,29 @@ def transcribe_video(model, video_path, language="ja", stop_event=None):
         if stop_event and stop_event.is_set():
             break
         min_prob = MIN_WORD_PROB_FALLBACK if seg.temperature > 0 else MIN_WORD_PROB
-        results.extend(u for u in split_into_utterances(seg.words or [])
-                       if u["prob"] >= min_prob and not is_repetitive(u["text"]))
+        for u in split_into_utterances(seg.words or []):
+            u["avg_logprob"] = round(float(seg.avg_logprob), 3)
+            u["no_speech_prob"] = round(float(seg.no_speech_prob), 3)
+            u["compression_ratio"] = round(float(seg.compression_ratio), 2)
+            u["temperature"] = round(float(seg.temperature), 1)
+            # 確度の低い発話も消さずに、理由をフラグとして残す
+            flags = []
+            if u["prob"] < min_prob:
+                flags.append("low_word_prob")
+            if is_repetitive(u["text"]):
+                flags.append("repetitive")
+            if is_hallucination(u["text"]):
+                flags.append("hallucination_phrase")
+            u["flags"] = flags
+            results.append(u)
     return results
+
+
+def segment_flags(seg):
+    """古い版のデータ (flags なし) では定型文の判定だけ行う"""
+    if "flags" in seg:
+        return seg["flags"]
+    return ["hallucination_phrase"] if is_hallucination(seg["text"]) else []
 
 
 def split_into_utterances(words):
@@ -347,10 +381,6 @@ def needs_speaker_analysis(info):
     return any(seg.get("speaker_v") != SPEAKER_ANALYSIS_VERSION for seg in info.get("segments", []))
 
 
-def safe_filename(name):
-    return re.sub(r'[\\/:*?"<>|]', "_", name).strip() or "unknown"
-
-
 def format_time(sec):
     m, s = divmod(int(sec), 60)
     h, m = divmod(m, 60)
@@ -364,161 +394,156 @@ def apply_speech_start_dates(speakers, date, speech_start_dates):
     return [n for n in speakers if not speech_start_dates.get(n) or date[:10] >= speech_start_dates[n]]
 
 
-def build_people_index(transcripts, scan_results, speech_start_dates=None):
-    """動画ごとの文字起こしを話者ごとに振り分ける"""
-    people = {name: [] for name in scan_results.get("people", {}).keys()}
-    offscreen = []
+def build_utterances(transcripts, scan_results, speech_start_dates=None):
+    """全動画・全話者の発話を1件ずつの記録にする (撮影者も人物も同じ形式・時刻順)"""
     metadata = scan_results.get("metadata", {})
-
+    records = []
     for video_path, info in transcripts.items():
         date = metadata.get(video_path, {}).get("date", "")
-        for seg in info.get("segments", []):
-            if is_hallucination(seg["text"]) or "speakers" not in seg:
-                continue
-            speakers = apply_speech_start_dates(seg["speakers"], date, speech_start_dates)
-            entry = {"video": video_path, "date": date, "start": seg["start"], "end": seg["end"],
-                     "text": seg["text"], "method": seg["speaker_method"],
-                     "visible": seg.get("visible", [])}
-            if not speakers:
-                offscreen.append(entry)
-            for name in speakers:
-                people.setdefault(name, []).append(dict(entry, with_people=[n for n in speakers if n != name]))
-
-    for entries in list(people.values()) + [offscreen]:
-        entries.sort(key=lambda e: (e["date"], e["video"], e["start"]))
-    return people, offscreen
-
-
-def build_conversations(transcripts, scan_results, speech_start_dates=None):
-    """動画ごとに全話者の発話を時刻順に並べた会話と、話者が替わる受け答え(対話ペア)を作る"""
-    metadata = scan_results.get("metadata", {})
-    conversations = []
-    pairs = []
-
-    for video_path, info in transcripts.items():
-        date = metadata.get(video_path, {}).get("date", "")
-        turns = []
         for seg in sorted(info.get("segments", []), key=lambda x: x["start"]):
-            if is_hallucination(seg["text"]) or "speakers" not in seg:
+            if "speakers" not in seg:
                 continue
             speakers = apply_speech_start_dates(seg["speakers"], date, speech_start_dates)
-            speaker = "/".join(speakers) if speakers else TIMELINE_SPEAKER_OFFSCREEN
-            estimated = bool(speakers) and seg["speaker_method"] == "estimated"
-            prev = turns[-1] if turns else None
-            # 同じ話者の細切れの発話は1つの発言にまとめる
-            if (prev and prev["speaker"] == speaker and prev["estimated"] == estimated
-                    and seg["start"] - prev["end"] <= MERGE_SAME_SPEAKER_GAP_SEC):
-                prev["end"] = seg["end"]
-                prev["text"] += seg["text"]
-                continue
-            turns.append({"start": seg["start"], "end": seg["end"], "speaker": speaker,
-                          "estimated": estimated, "text": seg["text"]})
-        if not turns:
-            continue
-        conversations.append({"video": video_path, "date": date, "turns": turns})
+            method = seg["speaker_method"]
+            if seg["speakers"] and not speakers:
+                method = "before_speech_start"
+            flags = segment_flags(seg)
+            records.append({
+                "video": os.path.basename(video_path),
+                "video_path": video_path,
+                "recorded_at": date.replace(" ", "T") if date else None,
+                "start": seg["start"],
+                "end": seg["end"],
+                "text": seg["text"],
+                "speaker": speakers[0] if speakers else TIMELINE_SPEAKER_OFFSCREEN,
+                "speaker_estimated": bool(speakers) and method == "estimated",
+                "speaker_method": method,
+                "overlap_with": speakers[1:],
+                "on_screen": seg.get("visible", []),
+                "mouth_activity": seg.get("mouth_activity", {}),
+                "word_prob": seg.get("prob"),
+                "avg_logprob": seg.get("avg_logprob"),
+                "no_speech_prob": seg.get("no_speech_prob"),
+                "compression_ratio": seg.get("compression_ratio"),
+                "temperature": seg.get("temperature"),
+                "low_confidence": bool(flags),
+                "flags": flags,
+                "model": info.get("model"),
+            })
+    records.sort(key=lambda r: (r["recorded_at"] or "", r["video_path"], r["start"]))
+    return records
 
-        for a, b in zip(turns, turns[1:]):
+
+def speaker_names(r):
+    return [] if r["speaker"] == TIMELINE_SPEAKER_OFFSCREEN else [r["speaker"]] + r["overlap_with"]
+
+
+def build_conversations(records):
+    """動画ごとに全話者の発話を時刻順に並べた会話と、話者が替わる受け答え(対話ペア)を作る"""
+    conversations = []
+    for r in records:
+        if not conversations or conversations[-1]["video_path"] != r["video_path"]:
+            conversations.append({"video": r["video"], "video_path": r["video_path"],
+                                  "recorded_at": r["recorded_at"], "turns": []})
+        turns = conversations[-1]["turns"]
+        speaker = "/".join(speaker_names(r)) or TIMELINE_SPEAKER_OFFSCREEN
+        prev = turns[-1] if turns else None
+        # 同じ話者の細切れの発話は1つの発言にまとめる
+        if (prev and prev["speaker"] == speaker and prev["estimated"] == r["speaker_estimated"]
+                and prev["low_confidence"] == r["low_confidence"]
+                and r["start"] - prev["end"] <= MERGE_SAME_SPEAKER_GAP_SEC):
+            prev["end"] = r["end"]
+            prev["text"] += r["text"]
+            continue
+        turns.append({"start": r["start"], "end": r["end"], "speaker": speaker,
+                      "estimated": r["speaker_estimated"], "low_confidence": r["low_confidence"],
+                      "text": r["text"]})
+
+    pairs = []
+    for c in conversations:
+        for a, b in zip(c["turns"], c["turns"][1:]):
             if a["speaker"] != b["speaker"] and b["start"] - a["end"] <= DIALOGUE_PAIR_MAX_GAP_SEC:
-                pairs.append({"video": video_path, "date": date, "time": a["start"],
+                pairs.append({"video": c["video"], "video_path": c["video_path"],
+                              "recorded_at": c["recorded_at"], "time": a["start"],
                               "speaker": a["speaker"], "text": a["text"],
                               "reply_speaker": b["speaker"], "reply_text": b["text"],
-                              "estimated": a["estimated"] or b["estimated"]})
-
-    conversations.sort(key=lambda c: (c["date"], c["video"]))
-    pairs.sort(key=lambda p: (p["date"], p["video"], p["time"]))
+                              "estimated": a["estimated"] or b["estimated"],
+                              "low_confidence": a["low_confidence"] or b["low_confidence"]})
     return conversations, pairs
+
+
+def notes_suffix(notes):
+    return f"  ({' / '.join(notes)})" if notes else ""
 
 
 def turn_label(turn):
     return f"{turn['speaker']}(推定)" if turn["estimated"] else turn["speaker"]
 
 
+def recorded_label(recorded_at):
+    return (recorded_at or "").replace("T", " ")
+
+
+def write_lines(path, lines):
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+
+
 def write_conversation_files(conversations, pairs, output_dir):
-    os.makedirs(output_dir, exist_ok=True)
     written = []
     if conversations:
         n_turns = sum(len(c["turns"]) for c in conversations)
         lines = [f"# 会話タイムライン ({len(conversations)} 本 / {n_turns} 発言)", ""]
         for c in conversations:
             lines.append("")
-            lines.append(f"## {os.path.basename(c['video'])}  {c['date']}")
+            lines.append(f"## {c['video']}  {recorded_label(c['recorded_at'])}")
             for t in c["turns"]:
-                lines.append(f"[{format_time(t['start'])}] {turn_label(t)}: {t['text']}")
+                lines.append(f"[{format_time(t['start'])}] {turn_label(t)}: {t['text']}"
+                             + notes_suffix(["低確度"] if t["low_confidence"] else []))
         path = os.path.join(output_dir, "会話タイムライン.txt")
-        with open(path, "w", encoding="utf-8") as f:
-            f.write("\n".join(lines) + "\n")
+        write_lines(path, lines)
         written.append(path)
     if pairs:
         lines = [f"# 対話ペア ({len(pairs)} 組)", "", "話者が替わった直後の受け答えを、問いかけ → 返答の形で並べています。", ""]
         current_video = None
         for p in pairs:
-            if p["video"] != current_video:
-                current_video = p["video"]
+            if p["video_path"] != current_video:
+                current_video = p["video_path"]
                 lines.append("")
-                lines.append(f"## {os.path.basename(current_video)}  {p['date']}")
-            mark = "  (推定を含む)" if p["estimated"] else ""
-            lines.append(f"[{format_time(p['time'])}] {p['speaker']}「{p['text']}」 → {p['reply_speaker']}「{p['reply_text']}」{mark}")
+                lines.append(f"## {p['video']}  {recorded_label(p['recorded_at'])}")
+            notes = (["推定を含む"] if p["estimated"] else []) + (["低確度を含む"] if p["low_confidence"] else [])
+            lines.append(f"[{format_time(p['time'])}] {p['speaker']}「{p['text']}」 → {p['reply_speaker']}「{p['reply_text']}」"
+                         + notes_suffix(notes))
         path = os.path.join(output_dir, "対話ペア.txt")
-        with open(path, "w", encoding="utf-8") as f:
-            f.write("\n".join(lines) + "\n")
+        write_lines(path, lines)
         written.append(path)
     return written
 
 
-def write_text_file(path, title, entries, note_fn):
-    lines = [f"# {title} ({len(entries)} 件)", ""]
-    current_video = None
-    for e in entries:
-        if e["video"] != current_video:
-            current_video = e["video"]
-            lines.append("")
-            lines.append(f"## {os.path.basename(current_video)}  {e['date']}")
-        lines.append(f"[{format_time(e['start'])} - {format_time(e['end'])}] {e['text']}{note_fn(e)}")
-    with open(path, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines) + "\n")
-
-
-def person_note(e):
-    notes = []
-    if e["method"] == "estimated":
-        notes.append("推定")
-    if e["with_people"]:
-        notes.append(f"同時: {', '.join(e['with_people'])}")
-    return f"  ({' / '.join(notes)})" if notes else ""
-
-
-def offscreen_note(e):
-    return f"  (画面: {', '.join(e['visible'])})" if e["visible"] else ""
-
-
-def write_text_files(people, offscreen, output_dir):
-    os.makedirs(output_dir, exist_ok=True)
-    written = []
-    for name, entries in people.items():
-        if not entries:
-            continue
-        path = os.path.join(output_dir, f"{safe_filename(name)}.txt")
-        write_text_file(path, f"{name} の発話テキスト", entries, person_note)
-        written.append(path)
-    if offscreen:
-        path = os.path.join(output_dir, f"{OFFSCREEN_LABEL}.txt")
-        write_text_file(path, f"{OFFSCREEN_LABEL}の発話テキスト", offscreen, offscreen_note)
-        written.append(path)
-    return written
+def write_utterances_jsonl(records, output_dir):
+    """機械処理用: 全員の発話を1行1件のJSONで1ファイルにまとめる"""
+    path = os.path.join(output_dir, UTTERANCES_JSONL)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        for r in records:
+            f.write(json.dumps(r, ensure_ascii=False) + "\n")
+    os.replace(tmp, path)
+    return path
 
 
 def update_outputs(data, scan_results, output_json, text_output_dir, speech_start_dates=None):
-    people, offscreen = build_people_index(data["videos"], scan_results, speech_start_dates)
-    conversations, pairs = build_conversations(data["videos"], scan_results, speech_start_dates)
-    data["people"] = people
-    data["offscreen"] = offscreen
+    records = build_utterances(data["videos"], scan_results, speech_start_dates)
+    conversations, pairs = build_conversations(records)
     data["conversations"] = conversations
     data["dialogue_pairs"] = pairs
-    data.pop("unassigned", None)
+    for key in ("people", "offscreen", "unassigned"):
+        data.pop(key, None)  # 発話ごとの記録は utterances.jsonl に出力する
     save_json_atomic(output_json, data)
-    written = write_text_files(people, offscreen, text_output_dir)
+
+    os.makedirs(text_output_dir, exist_ok=True)
+    written = [write_utterances_jsonl(records, text_output_dir)]
     written += write_conversation_files(conversations, pairs, text_output_dir)
-    return people, offscreen, written
+    return records, written
 
 
 def run_transcription(scan_json=None, output_json=None, text_output_dir=None,
@@ -549,7 +574,9 @@ def run_transcription(scan_json=None, output_json=None, text_output_dir=None,
     # 文字起こし済みでも話者判定がまだの動画は、判定だけを行う
     # 別のモデルで文字起こしした動画は、選んだモデルでやり直す
     def needs_transcription(v):
-        return force or v not in transcripts or transcripts[v].get("model") != model_size
+        info = transcripts.get(v)
+        return (force or info is None or info.get("model") != model_size
+                or info.get("transcribe_v") != TRANSCRIBE_VERSION)
 
     to_process = [v for v in target_videos
                   if os.path.exists(v) and (needs_transcription(v) or needs_speaker_analysis(transcripts[v]))]
@@ -571,6 +598,7 @@ def run_transcription(scan_json=None, output_json=None, text_output_dir=None,
                 segments = transcribe_video(model, video_path, language=language, stop_event=stop_event)
                 info = {
                     "model": model_size,
+                    "transcribe_v": TRANSCRIBE_VERSION,
                     "language": language,
                     "transcribed_at": datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                     "segments": segments,
@@ -606,13 +634,10 @@ def run_transcription(scan_json=None, output_json=None, text_output_dir=None,
               + (f" 話者: {', '.join(sorted(set(speakers)))}" if speakers else ""))
         sys.stdout.flush()
 
-    people, offscreen, written = update_outputs(data, scan_results, output_json, text_output_dir, speech_start_dates)
-    print(f"\n人物ごとのテキストを保存しました: {text_output_dir}")
-    for name, entries in people.items():
-        if entries:
-            print(f"- {name}: {len(entries)} 件")
-    if offscreen:
-        print(f"- {OFFSCREEN_LABEL}: {len(offscreen)} 件")
+    records, written = update_outputs(data, scan_results, output_json, text_output_dir, speech_start_dates)
+    print(f"\n発話テキストを保存しました: {text_output_dir}")
+    for speaker, n in Counter(r["speaker"] for r in records).most_common():
+        print(f"- {speaker}: {n} 件")
     return written
 
 
