@@ -13,3 +13,4 @@ customtkinter
 face-recognition
 face-recognition-models
 dlib
+faster-whisper

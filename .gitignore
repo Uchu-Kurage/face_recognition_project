@@ -13,6 +13,7 @@ env/
 # --- ファイル作成・スキャンデータ（ローカル情報） ---
 scan_results.json
 scan_results_*.json
+transcripts.json
 story_playlist.json
 target_faces.pkl
 config.json
