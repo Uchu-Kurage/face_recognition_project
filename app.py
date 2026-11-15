@@ -889,6 +889,11 @@ class ModernDigestApp(ctk.CTk):
         self.progressbar.set(0)
         self.log(">>> 人物ごとの音声テキスト抽出を開始")
 
+        # BGM用に設定済みのHugging Faceトークンがあれば、音声認識モデルのダウンロードにも使う
+        token = self.hf_token.get().strip()
+        if token and not os.environ.get("HF_TOKEN"):
+            os.environ["HF_TOKEN"] = token
+
         def run():
             try:
                 current_stdout = sys.stdout

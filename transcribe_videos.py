@@ -49,6 +49,8 @@ def load_whisper_model(model_size="small"):
     model_dir = os.path.join(get_user_data_dir(), "models", "whisper")
     os.makedirs(model_dir, exist_ok=True)
     print(f"音声認識モデルを準備中 ({model_size}) ... 初回はダウンロードに時間がかかります")
+    if not os.environ.get("HF_TOKEN"):
+        print("  (HF_TOKEN 未設定の警告が出ることがありますが、ダウンロードはそのまま続行されます)")
     sys.stdout.flush()
     # ctranslate2 は Apple Silicon の GPU に非対応のため CPU(int8) で実行する
     return WhisperModel(model_size, device="auto", compute_type="int8", download_root=model_dir)
