@@ -3,6 +3,8 @@ import sys
 import re
 import subprocess
 import zlib
+import shutil
+import hashlib
 import json
 from collections import Counter
 import datetime
@@ -79,6 +81,11 @@ MERGE_SAME_SPEAKER_GAP_SEC = 1.5   # 同じ話者の発話がこの間隔以内�
 DIALOGUE_PAIR_MAX_GAP_SEC = 5.0    # 話者が替わるまでの間隔がこれ以内なら「対話ペア」とみなす
 UTTERANCES_JSONL = "utterances.jsonl"
 
+# --- 発話ごとの音声ファイル ---
+AUDIO_DIRNAME = "audio"        # 出力先フォルダ内のサブフォルダ名
+AUDIO_PAD_SEC = 0.1            # 発話の頭や語尾が切れないよう前後に付ける余白
+MIN_FREE_DISK_BYTES = 2 * 1024 ** 3  # 空き容量がこれを下回ったら音声の保存を止める
+
 
 def get_ffmpeg_exe():
     try:
@@ -118,9 +125,10 @@ def load_whisper_model(model_size=DEFAULT_WHISPER_MODEL):
     return WhisperModel(model_size, device="auto", compute_type="int8", download_root=model_dir)
 
 
-def transcribe_video(model, video_path, language="ja", stop_event=None):
+def transcribe_video(model, video_path, language="ja", stop_event=None, audio=None):
     """1本の動画を文字起こしし、セグメントのリストを返す。音声が無い場合は空リスト"""
-    audio = load_audio(video_path)
+    if audio is None:
+        audio = load_audio(video_path)
     if audio is None or len(audio) == 0:
         print(f"  音声トラックがありません: {os.path.basename(video_path)}")
         return []
@@ -381,6 +389,75 @@ def needs_speaker_analysis(info):
     return any(seg.get("speaker_v") != SPEAKER_ANALYSIS_VERSION for seg in info.get("segments", []))
 
 
+def safe_filename(name):
+    return re.sub(r'[\\/:*?"<>|]', "_", name).strip() or "unknown"
+
+
+def clip_relpath(video_path, date, seg):
+    """発話の音声ファイルの、出力先フォルダからの相対パス (動画ごとにフォルダを分ける)"""
+    stem = safe_filename(os.path.splitext(os.path.basename(video_path))[0])
+    # 同じファイル名の動画が別フォルダにあっても衝突しないよう、元のパスのハッシュを付ける
+    digest = hashlib.md5(video_path.encode("utf-8")).hexdigest()[:8]
+    folder = f"{(date or '')[:10] or 'unknown'}_{stem}_{digest}"
+    return f"{AUDIO_DIRNAME}/{folder}/{seg['start']:07.2f}-{seg['end']:07.2f}.flac"
+
+
+def clip_offset(seg):
+    """音声ファイルの先頭が動画の何秒目にあたるか"""
+    return round(max(0.0, seg["start"] - AUDIO_PAD_SEC), 2)
+
+
+def write_flac(path, samples):
+    import av
+    pcm = (np.clip(samples, -1.0, 1.0) * 32767).astype(np.int16)
+    tmp = path + ".tmp"
+    with av.open(tmp, "w", format="flac") as out:
+        stream = out.add_stream("flac", rate=SAMPLE_RATE, layout="mono")
+        frame = av.AudioFrame.from_ndarray(pcm.reshape(1, -1), format="s16", layout="mono")
+        frame.sample_rate = SAMPLE_RATE
+        for packet in stream.encode(frame):
+            out.mux(packet)
+        for packet in stream.encode(None):
+            out.mux(packet)
+    os.replace(tmp, path)
+
+
+def needs_audio_export(video_path, date, segments, output_dir):
+    return any(not os.path.exists(os.path.join(output_dir, clip_relpath(video_path, date, seg))) for seg in segments)
+
+
+def export_audio_clips(video_path, date, segments, audio, output_dir):
+    """発話ごとの音声を FLAC (16kHz モノラル) で保存し、文字起こしし直して不要になった古いファイルを消す"""
+    expected = set()
+    written = 0
+    for seg in segments:
+        rel = clip_relpath(video_path, date, seg)
+        path = os.path.join(output_dir, rel)
+        expected.add(os.path.basename(path))
+        if os.path.exists(path):
+            continue
+        start = int(clip_offset(seg) * SAMPLE_RATE)
+        end = min(len(audio), int((seg["end"] + AUDIO_PAD_SEC) * SAMPLE_RATE))
+        if end <= start:
+            continue
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        write_flac(path, audio[start:end])
+        written += 1
+
+    if segments:
+        folder = os.path.dirname(os.path.join(output_dir, clip_relpath(video_path, date, segments[0])))
+        if os.path.isdir(folder):
+            for f in os.listdir(folder):
+                if f.endswith(".flac") and f not in expected:
+                    os.remove(os.path.join(folder, f))
+    return written
+
+
+def enough_disk_space(output_dir):
+    os.makedirs(output_dir, exist_ok=True)
+    return shutil.disk_usage(output_dir).free >= MIN_FREE_DISK_BYTES
+
+
 def format_time(sec):
     m, s = divmod(int(sec), 60)
     h, m = divmod(m, 60)
@@ -394,7 +471,7 @@ def apply_speech_start_dates(speakers, date, speech_start_dates):
     return [n for n in speakers if not speech_start_dates.get(n) or date[:10] >= speech_start_dates[n]]
 
 
-def build_utterances(transcripts, scan_results, speech_start_dates=None):
+def build_utterances(transcripts, scan_results, speech_start_dates=None, output_dir=None):
     """全動画・全話者の発話を1件ずつの記録にする (撮影者も人物も同じ形式・時刻順)"""
     metadata = scan_results.get("metadata", {})
     records = []
@@ -408,6 +485,9 @@ def build_utterances(transcripts, scan_results, speech_start_dates=None):
             if seg["speakers"] and not speakers:
                 method = "before_speech_start"
             flags = segment_flags(seg)
+            audio_rel = clip_relpath(video_path, date, seg) if output_dir else None
+            if audio_rel and not os.path.exists(os.path.join(output_dir, audio_rel)):
+                audio_rel = None
             records.append({
                 "video": os.path.basename(video_path),
                 "video_path": video_path,
@@ -429,6 +509,8 @@ def build_utterances(transcripts, scan_results, speech_start_dates=None):
                 "low_confidence": bool(flags),
                 "flags": flags,
                 "model": info.get("model"),
+                "audio_file": audio_rel,
+                "audio_offset": clip_offset(seg) if audio_rel else None,
             })
     records.sort(key=lambda r: (r["recorded_at"] or "", r["video_path"], r["start"]))
     return records
@@ -532,7 +614,7 @@ def write_utterances_jsonl(records, output_dir):
 
 
 def update_outputs(data, scan_results, output_json, text_output_dir, speech_start_dates=None):
-    records = build_utterances(data["videos"], scan_results, speech_start_dates)
+    records = build_utterances(data["videos"], scan_results, speech_start_dates, text_output_dir)
     conversations, pairs = build_conversations(records)
     data["conversations"] = conversations
     data["dialogue_pairs"] = pairs
@@ -548,8 +630,9 @@ def update_outputs(data, scan_results, output_json, text_output_dir, speech_star
 
 def run_transcription(scan_json=None, output_json=None, text_output_dir=None,
                       model_size=DEFAULT_WHISPER_MODEL, language="ja", force=False, stop_event=None,
-                      speech_start_dates=None):
-    """speech_start_dates: {人物名: "YYYY-MM-DD"} この日付より前の動画ではその人物を話者にしない"""
+                      speech_start_dates=None, export_audio=True):
+    """speech_start_dates: {人物名: "YYYY-MM-DD"} この日付より前の動画ではその人物を話者にしない
+    export_audio: 発話ごとの音声を FLAC で出力フォルダの audio/ に保存する"""
     user_data_dir = get_user_data_dir()
     if scan_json is None:
         scan_json = os.path.join(user_data_dir, "scan_results.json")
@@ -578,10 +661,25 @@ def run_transcription(scan_json=None, output_json=None, text_output_dir=None,
         return (force or info is None or info.get("model") != model_size
                 or info.get("transcribe_v") != TRANSCRIBE_VERSION)
 
+    metadata = scan_results.get("metadata", {})
+
+    def video_date(v):
+        return metadata.get(v, {}).get("date", "")
+
+    # 文字起こし済みでも音声ファイルがまだの動画は、音声の保存だけを行う
+    def needs_audio(v):
+        info = transcripts.get(v)
+        return (export_audio and info is not None and not needs_transcription(v)
+                and needs_audio_export(v, video_date(v), info.get("segments", []), text_output_dir))
+
     to_process = [v for v in target_videos
-                  if os.path.exists(v) and (needs_transcription(v) or needs_speaker_analysis(transcripts[v]))]
+                  if os.path.exists(v) and (needs_transcription(v) or needs_speaker_analysis(transcripts[v])
+                                            or needs_audio(v))]
     n_transcribe = sum(1 for v in to_process if needs_transcription(v))
-    print(f"処理対象: {len(to_process)} 本 (うち文字起こし {n_transcribe} 本 / 人物検出済み動画 {len(target_videos)} 本中)")
+    n_audio = sum(1 for v in to_process if needs_audio(v))
+    print(f"処理対象: {len(to_process)} 本 (うち文字起こし {n_transcribe} 本"
+          + (f" / 音声の保存のみ {n_audio} 本" if export_audio else "")
+          + f" / 人物検出済み動画 {len(target_videos)} 本中)")
 
     model = None
     for i, video_path in enumerate(to_process, 1):
@@ -589,13 +687,16 @@ def run_transcription(scan_json=None, output_json=None, text_output_dir=None,
             print("\nユーザーによる中断がリクエストされました。")
             break
         name = os.path.basename(video_path)
+        audio = None
+        transcribed_now = needs_transcription(video_path)
         try:
-            if needs_transcription(video_path):
+            if transcribed_now:
                 if model is None:
                     model = load_whisper_model(model_size)
                 print(f"  文字起こし中: {name}")
                 sys.stdout.flush()
-                segments = transcribe_video(model, video_path, language=language, stop_event=stop_event)
+                audio = load_audio(video_path)
+                segments = transcribe_video(model, video_path, language=language, stop_event=stop_event, audio=audio)
                 info = {
                     "model": model_size,
                     "transcribe_v": TRANSCRIBE_VERSION,
@@ -607,10 +708,24 @@ def run_transcription(scan_json=None, output_json=None, text_output_dir=None,
                 info = transcripts[video_path]
                 segments = info["segments"]
 
-            if segments:
-                print(f"  話者判定中: {name} ({len(segments)} 発話)")
-                sys.stdout.flush()
-            baselines = analyze_video_speakers(video_path, segments, scan_results, stop_event=stop_event)
+            if needs_transcription(video_path) or needs_speaker_analysis(info):
+                if segments:
+                    print(f"  話者判定中: {name} ({len(segments)} 発話)")
+                    sys.stdout.flush()
+                baselines = analyze_video_speakers(video_path, segments, scan_results, stop_event=stop_event)
+            else:
+                baselines = info.get("mouth_baseline", {})
+
+            if export_audio and segments and not (stop_event and stop_event.is_set()):
+                if not enough_disk_space(text_output_dir):
+                    print(f"  警告: 空き容量が {MIN_FREE_DISK_BYTES // 1024 ** 3}GB を下回ったため、音声の保存を止めます")
+                    export_audio = False
+                # 文字起こしし直した動画は、発話の区切りが変わって不要になった古い音声も消す
+                elif transcribed_now or needs_audio_export(video_path, video_date(video_path), segments, text_output_dir):
+                    if audio is None:
+                        audio = load_audio(video_path)
+                    if audio is not None:
+                        export_audio_clips(video_path, video_date(video_path), segments, audio, text_output_dir)
         except Exception as e:
             print(f"  エラー ({name}): {e}")
             continue

@@ -25,7 +25,7 @@ hiddenimports = [
 ]
 
 # Collect all (datas, binaries, hiddenimports) for tricky packages
-for pkg in ['imageio', 'imageio_ffmpeg', 'moviepy', 'customtkinter', 'requests', 'face_recognition', 'dlib', 'onnxruntime', 'faster_whisper', 'ctranslate2', 'tokenizers']:
+for pkg in ['imageio', 'imageio_ffmpeg', 'moviepy', 'customtkinter', 'requests', 'face_recognition', 'dlib', 'onnxruntime', 'faster_whisper', 'ctranslate2', 'tokenizers', 'av']:
     tmp_ret = collect_all(pkg)
     datas += tmp_ret[0]
     binaries += tmp_ret[1]

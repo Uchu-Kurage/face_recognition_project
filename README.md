@@ -42,7 +42,8 @@ Omokageは、動画ファイルから特定の人物を検出し、その人物�
    - 食事中など話していなくても口が動く人のために、発話の合間の口の動きを「ふだんの口の動き」として測り、それを上回ったときだけ話していると判定します。
    - 赤ちゃんは話していなくても口がよく動くため、人物リストの 🗣 ボタンで「話し始めた日付」を設定してください。その日付より前の動画では、その人物を発話者にしません。
    - `会話タイムライン.txt` には、動画ごとに全員（人物・撮影者）の発話を時刻順に並べます。`対話ペア.txt` には、話者が替わった直後の受け答え（例: 撮影者「いける?」→ はる「いける」）を並べます。`transcripts.json` の `conversations` / `dialogue_pairs` にも同じ内容を保存します。
-   - `utterances.jsonl` は機械処理用です。撮影者を含む全員の発話を、1行1件の JSON で1ファイルにまとめます。主な項目は `video`, `recorded_at`, `start`, `end`, `text`, `speaker`, `speaker_estimated`, `overlap_with`, `on_screen`, `avg_logprob`, `no_speech_prob`, `word_prob`, `low_confidence`, `flags` です。
+   - `utterances.jsonl` は機械処理用です。撮影者を含む全員の発話を、1行1件の JSON で1ファイルにまとめます。主な項目は `video`, `recorded_at`, `start`, `end`, `text`, `speaker`, `speaker_estimated`, `overlap_with`, `on_screen`, `avg_logprob`, `no_speech_prob`, `word_prob`, `low_confidence`, `flags`, `audio_file`, `audio_offset` です。
+   - 「発話の音声も保存 (FLAC)」にチェックを入れると、発話ごとの音声を `audio/<撮影日>_<動画名>_<識別子>/<開始秒>-<終了秒>.flac` に保存します（16kHz モノラル、文字起こしに使った音声と同じ品質）。頭や語尾が切れないよう前後に0.1秒の余白を付けます。`utterances.jsonl` の `audio_file` に音声ファイルの相対パス、`audio_offset` に音声の先頭が動画の何秒目にあたるかを記録します。文字起こし済みの動画は、文字起こしをやり直さずに音声だけを保存します。空き容量が2GBを下回ると保存を止めます。
 5. **設定**: BGMを生成するには、Hugging Faceの「Settings / About」ページでアクセストークンを入力してください。
 
 ## ライセンス
