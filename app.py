@@ -138,6 +138,7 @@ class ModernDigestApp(ctk.CTk):
         # 人物ごとの「話し始めた日付」(これより前の動画ではその人物を話者にしない)
         self.speech_start_dates = dict(self.config.get("speech_start_dates", {}))
         self.whisper_model = ctk.StringVar(value=self.config.get("whisper_model", transcribe_videos.DEFAULT_WHISPER_MODEL))
+        self.export_audio = ctk.BooleanVar(value=self.config.get("export_audio", True))
         self.view_mode = "People" # Forced default
         self.clip_view_mode = "list" # "list" or "grid"
         self.selected_clips = set() # set of (video_path, timestamp)
@@ -491,7 +492,8 @@ class ModernDigestApp(ctk.CTk):
 
         # Analysis Controls (Bottom)
         self.right_ctrl_cnt = ctk.CTkFrame(self.video_area, fg_color="transparent")
-        self.right_ctrl_cnt.pack(fill="x", pady=(5, 15), padx=10)
+        # 操作ボタンを動画リストより先に配置し、ウィンドウが低くてもボタンが押し出されないようにする
+        self.right_ctrl_cnt.pack(side="bottom", fill="x", pady=(5, 15), padx=10, before=self.scanned_cnt)
         
         self.cb_force = ctk.CTkCheckBox(self.right_ctrl_cnt, text="スキャン済みも再度スキャンして上書き", 
                                         variable=self.force_rescan, font=ctk.CTkFont(size=11),
@@ -514,13 +516,15 @@ class ModernDigestApp(ctk.CTk):
                                               fg_color=self.COLOR_DEEP_BG, text_color=self.COLOR_TEXT,
                                               width=160, height=26, font=ctk.CTkFont(size=11))
         self.menu_whisper.pack(side="left")
-        ctk.CTkLabel(model_row, text="※変更すると次回の抽出で全動画を文字起こしし直します",
-                     text_color="gray60", font=ctk.CTkFont(size=10)).pack(side="left", padx=8)
+        ctk.CTkCheckBox(model_row, text="発話の音声も保存 (FLAC)", variable=self.export_audio,
+                        command=self.save_config, font=ctk.CTkFont(size=11),
+                        fg_color=self.COLOR_ACCENT, hover_color=self.COLOR_HOVER,
+                        text_color=self.COLOR_TEXT).pack(side="left", padx=(12, 0))
 
         self.transcribe_row = ctk.CTkFrame(self.right_ctrl_cnt, fg_color="transparent")
         self.transcribe_row.pack(pady=5, padx=10, fill="x")
 
-        self.btn_transcribe = ctk.CTkButton(self.transcribe_row, text="人物ごとの音声テキスト抽出",
+        self.btn_transcribe = ctk.CTkButton(self.transcribe_row, text="音声テキスト抽出",
                                             command=self.start_transcription, height=35,
                                             font=ctk.CTkFont(size=12, weight="bold"),
                                             fg_color=self.COLOR_ACCENT, hover_color=self.COLOR_HOVER, text_color="black")
@@ -748,7 +752,8 @@ class ModernDigestApp(ctk.CTk):
             "bgm_enabled": self.bgm_enabled.get(),
             "hf_token": self.hf_token.get().strip(),
             "speech_start_dates": self.speech_start_dates,
-            "whisper_model": self.whisper_model.get()
+            "whisper_model": self.whisper_model.get(),
+            "export_audio": self.export_audio.get()
         }
         with open(self.CONFIG_FILE, 'w', encoding='utf-8') as f:
             json.dump(config, f, indent=4)
@@ -938,7 +943,7 @@ class ModernDigestApp(ctk.CTk):
         self.scan_stop_event.clear()
         self.render_phase = "init"
         self.progressbar.set(0)
-        self.log(">>> 人物ごとの音声テキスト抽出を開始")
+        self.log(">>> 音声テキスト抽出を開始")
 
         # BGM用に設定済みのHugging Faceトークンがあれば、音声認識モデルのダウンロードにも使う
         token = self.hf_token.get().strip()
@@ -960,7 +965,8 @@ class ModernDigestApp(ctk.CTk):
                         model_size=self.whisper_model.get(),
                         force=self.force_rescan.get(),
                         stop_event=self.scan_stop_event,
-                        speech_start_dates=dict(self.speech_start_dates))
+                        speech_start_dates=dict(self.speech_start_dates),
+                        export_audio=self.export_audio.get())
                 finally:
                     sys.stdout = current_stdout
                     sys.stderr = current_stderr
@@ -990,7 +996,7 @@ class ModernDigestApp(ctk.CTk):
         self.btn_transcribe.configure(state="disabled", text="中断中...")
 
     def reset_transcribe_ui(self):
-        self.btn_transcribe.configure(state="normal", text="人物ごとの音声テキスト抽出",
+        self.btn_transcribe.configure(state="normal", text="音声テキスト抽出",
                                       fg_color=self.COLOR_ACCENT, hover_color=self.COLOR_HOVER,
                                       command=self.start_transcription)
         self.btn_scan_run.configure(state="normal")
